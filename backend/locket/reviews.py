@@ -5,11 +5,11 @@ Enforces:
 - Active rating selection (1-5 stars, no defaults).
 - Optional plaintext feedback (maximum 1000 characters).
 - Secure image processing via Pillow:
-  - Max 3 images per review, max 3MB each.
+  - Max 3 images per review, max 8MB each.
   - Formats: JPEG, PNG, WEBP.
   - Image.MAX_IMAGE_PIXELS = 20_000_000 (decompression bomb protection).
   - EXIF orientation transposed, metadata stripped.
-  - Resized to max 1600x1600, converted to optimized WebP.
+  - Resized to max 1600x1600, converted to optimized WebP/JPEG.
   - Atomic write via temporary file, .tmp cleaned in finally.
 - Auto-published reviews are immediately public; rejected/hidden legacy images remain private.
 - Private owner route: GET /api/reviews/me/images/<image_id> for the owner to view current or legacy review images.
@@ -20,11 +20,8 @@ import io
 import json
 import logging
 import os
-import re
 import sqlite3
-import threading
 import time
-import uuid
 import warnings
 
 from flask import (
@@ -35,14 +32,29 @@ from flask import (
     jsonify,
     make_response,
     request,
-    send_file,
 )
 from PIL import Image, ImageOps
 from werkzeug.utils import secure_filename
 
 from . import db
+from .image_storage import (
+    ImageStorageConfigurationError,
+    ImageStorageUploadError,
+    SAFE_STORAGE_NAME,
+    delete_stored_image,
+    save_processed_image,
+    serve_stored_image,
+)
 from .token_auth import access_required
 from .user_auth import add_no_store_headers, get_client_ip, is_rate_limited, validate_csrf
+
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    # Local/test installations may not need HEIC. Production requirements
+    # install pillow-heif so photos selected directly from iPhone are accepted.
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +63,9 @@ reviews_bp = Blueprint("reviews", __name__, url_prefix="/api/reviews")
 # Pillow safety settings: Convert DecompressionBombWarning to error and cap pixels
 warnings.filterwarnings("error", category=Image.DecompressionBombWarning)
 Image.MAX_IMAGE_PIXELS = 20_000_000  # 20 Megapixels limit to prevent zip bombs
-MAX_IMAGE_SIZE = 3 * 1024 * 1024      # 3MB per file
+MAX_IMAGE_SIZE = 8 * 1024 * 1024      # 8MB per mobile photo
 MAX_IMAGES_PER_REVIEW = 3
-SAFE_FILENAME_REGEX = re.compile(r"^[a-zA-Z0-9_\-]+\.webp$")
+SAFE_FILENAME_REGEX = SAFE_STORAGE_NAME
 
 
 def get_storage_root() -> str:
@@ -90,27 +102,17 @@ class _StorageRootProxy:
 
 STORAGE_ROOT = _StorageRootProxy()
 
-# Public reviews cache
-_cache_lock = threading.Lock()
-_public_cache = {
-    "data": None,
-    "expires_at": 0.0,
-}
-CACHE_TTL_SECONDS = 60.0
-
-
 def invalidate_reviews_cache():
-    """Invalidate the public reviews cache upon review mutations."""
-    with _cache_lock:
-        _public_cache.clear()
+    """Compatibility hook; public reviews are intentionally always fresh."""
+    return None
 
 
 def process_and_save_image(file_storage, target_dir):
     """Safely validate, strip EXIF, resize, and convert image to WebP.
 
     Enforces:
-    - Max 3MB read limit (no unbounded memory read).
-    - JPEG, PNG, or static WebP only (animated WebP rejected).
+    - Max 8MB read limit (no unbounded memory read).
+    - JPEG, PNG, static WebP, HEIC or HEIF (animated images rejected).
     - Max 20 megapixel image dimensions.
     - EXIF transposed orientation, GPS/device metadata stripped.
     - WebP quality 82, thumbnail resize preserving aspect ratio (no crop).
@@ -119,7 +121,6 @@ def process_and_save_image(file_storage, target_dir):
     Returns:
         (image_meta_dict, error_message)
     """
-    temp_path = None
     try:
         # Other libraries/tests may alter the process-wide warning filters
         # after this module is imported. Reinforce the bomb policy at the
@@ -129,20 +130,20 @@ def process_and_save_image(file_storage, target_dir):
         # Stream read up to MAX_IMAGE_SIZE + 1 to prevent unbounded RAM usage
         raw_bytes = file_storage.read(MAX_IMAGE_SIZE + 1)
         if len(raw_bytes) > MAX_IMAGE_SIZE:
-            return None, "Kích thước mỗi ảnh không được vượt quá 3MB."
+            return None, "Kích thước mỗi ảnh không được vượt quá 8MB."
         if len(raw_bytes) < 16:
             return None, "Tệp ảnh không hợp lệ hoặc bị rỗng."
         # If there are more bytes in stream, reject
         extra_chunk = file_storage.read(1)
         if extra_chunk:
-            return None, "Kích thước mỗi ảnh không được vượt quá 3MB."
+            return None, "Kích thước mỗi ảnh không được vượt quá 8MB."
 
         # Pass 1: Verify format, animation, and dimensions
         try:
             with Image.open(io.BytesIO(raw_bytes)) as check_img:
                 fmt = check_img.format
-                if fmt not in ("JPEG", "PNG", "WEBP"):
-                    return None, f"Định dạng ảnh '{fmt}' không được hỗ trợ. Vui lòng chọn JPG, PNG hoặc WebP."
+                if fmt not in ("JPEG", "PNG", "WEBP", "HEIF", "HEIC"):
+                    return None, f"Định dạng ảnh '{fmt}' không được hỗ trợ. Vui lòng chọn JPG, PNG, WebP hoặc HEIC."
 
                 # Reject animated WebP or GIFs/multi-frame images
                 if getattr(check_img, "is_animated", False) or getattr(check_img, "n_frames", 1) > 1:
@@ -180,46 +181,55 @@ def process_and_save_image(file_storage, target_dir):
             img.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
             width, height = img.size
 
-            os.makedirs(target_dir, exist_ok=True)
-            storage_name = f"{uuid.uuid4().hex}.webp"
-            target_path = os.path.join(target_dir, storage_name)
-            temp_path = f"{target_path}.tmp"
+            # Encode before storage. A JPEG fallback keeps uploads working on
+            # minimal Pillow builds that do not include the WebP encoder.
+            encoded = io.BytesIO()
+            extension = "webp"
+            try:
+                img.save(encoded, format="WEBP", quality=82, method=6)
+            except (KeyError, OSError, ValueError):
+                encoded = io.BytesIO()
+                if img.mode != "RGB":
+                    background = Image.new("RGB", img.size, "white")
+                    background.paste(img, mask=img.getchannel("A"))
+                    img = background
+                img.save(encoded, format="JPEG", quality=88, optimize=True, progressive=True)
+                extension = "jpg"
 
-            # Saving without exif param cleanly strips all EXIF/GPS/device metadata
-            img.save(temp_path, format="WEBP", quality=82, method=6)
-            os.replace(temp_path, target_path)
-            temp_path = None  # Replaced successfully
-
-            file_size = os.path.getsize(target_path)
+            stored = save_processed_image(
+                encoded.getvalue(),
+                target_dir,
+                extension,
+                "review",
+            )
             orig_name = secure_filename(file_storage.filename or "image.webp")
 
             return {
-                "storage_name": storage_name,
+                "storage_name": stored["storage_name"],
                 "original_filename": orig_name,
-                "file_size": file_size,
-                "mime_type": "image/webp",
+                "file_size": stored["file_size"],
+                "mime_type": stored["mime_type"],
                 "width": width,
                 "height": height,
             }, None
 
     except (Image.DecompressionBombError, Image.DecompressionBombWarning):
         return None, "Hình ảnh quá lớn vượt ngưỡng an toàn điểm ảnh (Decompression Bomb)."
+    except ImageStorageConfigurationError as e:
+        logger.error("Review image storage is not configured: %s", e)
+        return None, str(e)
+    except ImageStorageUploadError as e:
+        return None, str(e)
     except Exception as e:
         logger.error("Error processing review image: %s", e, exc_info=True)
         return None, "Không thể xử lý tệp hình ảnh. Vui lòng kiểm tra và thử lại với ảnh khác."
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
 
 
 # ---- Public Endpoints ----
 
 @reviews_bp.route("", methods=["GET"])
 def get_public_reviews():
-    """Public list of approved reviews with stats, pagination, and caching."""
+    """Always-fresh public list of approved reviews with stats and pagination."""
     limit_raw = request.args.get("limit", 12)
     offset_raw = request.args.get("offset", 0)
 
@@ -234,14 +244,6 @@ def get_public_reviews():
     except (TypeError, ValueError):
         offset = 0
     offset = max(0, offset)
-
-    now = time.time()
-    cache_key = f"public_reviews_{limit}_{offset}"
-    with _cache_lock:
-        if _public_cache.get(cache_key) is not None and _public_cache.get(f"{cache_key}_exp", 0) > now:
-            resp = make_response(jsonify(_public_cache[cache_key]))
-            resp.headers["Cache-Control"] = "public, max-age=60, must-revalidate"
-            return resp
 
     # Fetch approved reviews from database with pagination and stats over all approved reviews
     result = db.get_approved_reviews(limit=limit, offset=offset)
@@ -281,12 +283,11 @@ def get_public_reviews():
         }),
     }
 
-    with _cache_lock:
-        _public_cache[cache_key] = payload
-        _public_cache[f"{cache_key}_exp"] = now + CACHE_TTL_SECONDS
-
     resp = make_response(jsonify(payload))
-    resp.headers["Cache-Control"] = "public, max-age=60, must-revalidate"
+    # Reviews are polled by the landing page. Do not let a browser, reverse
+    # proxy, or another worker serve a stale list after a new review is posted.
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
     return resp
 
 
@@ -305,23 +306,15 @@ def get_review_image(storage_name):
     if img_row.get("review_status") != "approved":
         abort(404)
 
-    storage_root = get_storage_root()
-    file_path = os.path.join(storage_root, storage_name)
-    if not os.path.exists(file_path):
+    resp = serve_stored_image(
+        storage_name,
+        get_storage_root(),
+        "review",
+        "public, max-age=300, must-revalidate",
+        accel_prefix="/protected_reviews",
+    )
+    if resp is None:
         abort(404)
-
-    # If Nginx X-Accel-Redirect is configured
-    if os.environ.get("ENABLE_ACCEL_REDIRECT") == "1":
-        resp = make_response("")
-        resp.headers["X-Accel-Redirect"] = f"/protected_reviews/{storage_name}"
-        resp.headers["Content-Type"] = "image/webp"
-        resp.headers["X-Content-Type-Options"] = "nosniff"
-        resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
-        return resp
-
-    resp = send_file(file_path, mimetype="image/webp", max_age=300)
-    resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
     return resp
 
 
@@ -336,14 +329,14 @@ def get_my_review_image(image_id):
     if not img_row:
         abort(404)
 
-    storage_root = get_storage_root()
-    file_path = os.path.join(storage_root, img_row["storage_name"])
-    if not os.path.exists(file_path):
+    resp = serve_stored_image(
+        img_row["storage_name"],
+        get_storage_root(),
+        "review",
+        "private, no-store",
+    )
+    if resp is None:
         abort(404)
-
-    resp = send_file(file_path, mimetype="image/webp")
-    resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers["Cache-Control"] = "private, no-store"
     return resp
 
 
@@ -487,10 +480,7 @@ def submit_review():
             meta, err = process_and_save_image(f, storage_root)
             if err:
                 for s in saved_images:
-                    try:
-                        os.remove(os.path.join(storage_root, s["storage_name"]))
-                    except OSError:
-                        pass
+                    delete_stored_image(s["storage_name"], storage_root, "review")
                 resp = make_response(jsonify({
                     "success": False,
                     "error": "image_processing_failed",
@@ -515,10 +505,7 @@ def submit_review():
         if existing:
             conn.execute("ROLLBACK")
             for s in saved_images:
-                try:
-                    os.remove(os.path.join(storage_root, s["storage_name"]))
-                except OSError:
-                    pass
+                delete_stored_image(s["storage_name"], storage_root, "review")
             resp = make_response(jsonify({
                 "success": False,
                 "error": "review_already_exists",
@@ -550,10 +537,7 @@ def submit_review():
         except Exception:
             pass
         for s in saved_images:
-            try:
-                os.remove(os.path.join(storage_root, s["storage_name"]))
-            except OSError:
-                pass
+            delete_stored_image(s["storage_name"], storage_root, "review")
         resp = make_response(jsonify({
             "success": False,
             "error": "review_already_exists",
@@ -566,10 +550,7 @@ def submit_review():
         except Exception:
             pass
         for s in saved_images:
-            try:
-                os.remove(os.path.join(storage_root, s["storage_name"]))
-            except OSError:
-                pass
+            delete_stored_image(s["storage_name"], storage_root, "review")
         logger.error("Failed to insert review in transaction: %s", e, exc_info=True)
         resp = make_response(jsonify({
             "success": False,
@@ -696,10 +677,7 @@ def update_my_review():
             meta, err = process_and_save_image(f, storage_root)
             if err:
                 for s in new_saved_images:
-                    try:
-                        os.remove(os.path.join(storage_root, s["storage_name"]))
-                    except OSError:
-                        pass
+                    delete_stored_image(s["storage_name"], storage_root, "review")
                 resp = make_response(jsonify({
                     "success": False,
                     "error": "image_processing_failed",
@@ -756,10 +734,7 @@ def update_my_review():
         except Exception:
             pass
         for s in new_saved_images:
-            try:
-                os.remove(os.path.join(storage_root, s["storage_name"]))
-            except OSError:
-                pass
+            delete_stored_image(s["storage_name"], storage_root, "review")
         logger.error("Failed to update review in transaction: %s", e, exc_info=True)
         resp = make_response(jsonify({
             "success": False,
@@ -770,10 +745,7 @@ def update_my_review():
 
     # ONLY after transaction commit succeeds: clean up old unkept files from disk
     for old_img in images_to_delete:
-        try:
-            os.remove(os.path.join(storage_root, old_img["storage_name"]))
-        except OSError:
-            pass
+        delete_stored_image(old_img["storage_name"], storage_root, "review")
 
     invalidate_reviews_cache()
 
@@ -843,10 +815,7 @@ def delete_my_review():
 
     # ONLY after transaction commit succeeds: clean up physical files
     for name in storage_names:
-        try:
-            os.remove(os.path.join(storage_root, name))
-        except OSError:
-            pass
+        delete_stored_image(name, storage_root, "review")
 
     invalidate_reviews_cache()
 

@@ -22,6 +22,7 @@ import {
 import { PlanCatalog } from './PlanCatalog';
 import { PaymentQrPanel, PaymentQrData } from '../../components/payment/PaymentQrPanel';
 import { usePaymentPolling } from '../../hooks/usePaymentPolling';
+import { useToast } from '../../hooks/useToast';
 import {
   Apple,
   Smartphone,
@@ -69,6 +70,7 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
   onGoToTopup,
   onOrderCreated,
 }) => {
+  const toast = useToast();
   const [currentStep, setCurrentStep] = useState<WizardStep>('plan');
 
   // Selected data
@@ -100,6 +102,7 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
   const qrAttemptRef = useRef<{ key: string; signature: string } | null>(null);
   const lastAutoQrSignatureRef = useRef<string | null>(null);
   const coinAttemptRef = useRef<{ key: string; signature: string } | null>(null);
+  const notifiedPurchasesRef = useRef<Set<string>>(new Set());
 
   // Completed activation state
   const [activationOrderId, setActivationOrderId] = useState<number | null>(null);
@@ -385,6 +388,15 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
       });
 
       if (res && res.success) {
+        const toastKey = `coin-order-${res.activation_order_id}`;
+        if (!notifiedPurchasesRef.current.has(toastKey)) {
+          notifiedPurchasesRef.current.add(toastKey);
+          toast.success(
+            'Mua gói thành công',
+            `Cảm ơn bạn đã chọn ${selectedPlan.name}. Đơn hàng đã được tiếp nhận và đang chuyển sang bước xử lý.`,
+            { duration: 6_000, dedupeKey: toastKey }
+          );
+        }
         setActivationOrderId(res.activation_order_id);
         setQueueClientId(res.client_id || null);
         setQueueStatus(res.status === 'queued' ? 'waiting' : res.status);
@@ -427,6 +439,7 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
       });
 
       if (res && res.success) {
+        setActivationOrderId(res.activation_order_id);
         setQrOrder({
           payment_id: res.payment_id,
           payment_code: res.payment_code,
@@ -513,6 +526,16 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
           : null
       );
       if (newStatus === 'paid') {
+        const paidOrderId = activationOrder?.id || activationOrderId;
+        const toastKey = `qr-payment-${_payment.id}`;
+        if (!notifiedPurchasesRef.current.has(toastKey)) {
+          notifiedPurchasesRef.current.add(toastKey);
+          toast.success(
+            'Thanh toán thành công',
+            `Cảm ơn bạn đã mua ${selectedPlan?.name || 'gói Locket Gold'}. Hệ thống đã nhận tiền và đang xử lý đơn hàng.`,
+            { duration: 6_000, dedupeKey: toastKey }
+          );
+        }
         if (activationOrder) {
           setActivationOrderId(activationOrder.id);
           setQueueClientId(activationOrder.queue_client_id || null);
@@ -520,6 +543,7 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
         }
         setCurrentStep('completed');
         onRefreshWallet();
+        if (paidOrderId && onOrderCreated) onOrderCreated(paidOrderId);
       } else if (newStatus === 'expired' || newStatus === 'cancelled') {
         setPaymentError('Mã thanh toán đã hết hạn hoặc bị hủy. Vui lòng tạo mã mới để tiếp tục.');
       }

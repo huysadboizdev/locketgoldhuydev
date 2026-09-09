@@ -4,7 +4,9 @@ import os
 import shutil
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+os.environ["REVIEW_STORAGE_PROVIDER"] = "local"
 
 from flask import Flask
 from PIL import Image
@@ -69,6 +71,28 @@ class CreatorImageProcessingTestCase(unittest.TestCase):
 
         self.assertIsNone(meta)
         self.assertIn("CREATOR_STORAGE_ROOT", error)
+
+    def test_creator_derivative_uploads_to_cloudinary_without_local_file(self):
+        self.app.config.update(
+            REVIEW_STORAGE_PROVIDER="cloudinary",
+            CLOUDINARY_CLOUD_NAME="test-cloud",
+            CLOUDINARY_API_KEY="test-key",
+            CLOUDINARY_API_SECRET="test-secret",
+            CLOUDINARY_CREATOR_FOLDER="locket-gold/creators",
+        )
+        uploader = Mock()
+        uploader.upload.return_value = {
+            "resource_type": "image",
+            "secure_url": "https://res.cloudinary.com/test-cloud/image/upload/creator.webp",
+            "bytes": 456,
+        }
+        with patch("locket.image_storage._configure_cloudinary", return_value=uploader):
+            meta, error = process_creator_screenshot(_image_upload((400, 800)), 30)
+
+        self.assertIsNone(error)
+        self.assertTrue(meta["storage_name"].startswith("cld_"))
+        self.assertFalse(os.path.exists(os.path.join(self.storage, meta["storage_name"])))
+        self.assertEqual(uploader.upload.call_args.kwargs["folder"], "locket-gold/creators")
 
 
 if __name__ == "__main__":

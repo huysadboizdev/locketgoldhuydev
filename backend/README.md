@@ -286,6 +286,18 @@ User Input (username)
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot token (backend only)           | Optional |
 | `TELEGRAM_CHAT_ID`   | Private chat/group receiving order alerts   | Optional |
 | `TELEGRAM_ADMIN_ORDERS_URL` | HTTPS link opened by the Admin button | Optional |
+| `VIETQR_ACCOUNT_NO` | Bank account or alias embedded in generated VietQR | Yes for VietQR |
+| `SEPAY_WEBHOOK_ACCOUNT_NUMBERS` | Exact numeric `accountNumber` value(s) returned by SePay; comma-separated | Yes for SePay |
+| `SEPAY_WEBHOOK_SECRET` | HMAC-SHA256 secret shared with SePay | Yes for SePay |
+| `PAYMENT_WEBHOOK_ENABLED` | Enables automatic wallet and plan settlement when set to `1` | Yes for SePay |
+
+### VietQR and SePay reconciliation
+
+The QR account alias and SePay's webhook `accountNumber` are not always the
+same value. Configure both separately. A verified incoming webhook is settled
+only when its account, transfer code, and exact amount match a pending payment.
+The same atomic settlement handles wallet top-ups and direct plan purchases;
+replayed webhooks cannot credit Coin or fulfill a plan twice.
 
 ### Telegram Notifications
 

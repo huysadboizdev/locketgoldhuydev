@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import {
@@ -16,6 +16,11 @@ import { WalletView } from './dashboard/WalletView';
 import { OrdersView } from './dashboard/OrdersView';
 import { FeedbackView } from './dashboard/FeedbackView';
 import { ThemeToggle } from '../components/layout/ThemeToggle';
+import { PostServiceReviewPrompt } from '../components/reviews/PostServiceReviewPrompt';
+import { useReviews } from '../hooks/useReviews';
+import { useToast } from '../hooks/useToast';
+import { useOverlay } from '../context/OverlayContext';
+import { useLiveRefresh } from '../hooks/useLiveRefresh';
 import {
   LayoutDashboard,
   Zap,
@@ -41,6 +46,9 @@ export const DashboardPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<DashboardTab>(tabParam);
 
   const { user, logout } = useAuth();
+  const toast = useToast();
+  const { hasActiveOverlay } = useOverlay();
+  const reviewState = useReviews({ loadPublic: false });
 
   // Shared state
   const [plans, setPlans] = useState<PlanItem[]>([]);
@@ -48,7 +56,12 @@ export const DashboardPage: React.FC = () => {
   const [coinBalance, setCoinBalance] = useState<number>(0);
   const [isLoadingBalance, setIsLoadingBalance] = useState(false);
   const [orders, setOrders] = useState<ActivationOrder[]>([]);
+  const [ordersLoaded, setOrdersLoaded] = useState(false);
   const [neededTopupCoins, setNeededTopupCoins] = useState<number | null>(null);
+  const [reviewPromptOrder, setReviewPromptOrder] = useState<ActivationOrder | null>(null);
+  const [reviewPromptOpen, setReviewPromptOpen] = useState(false);
+  const refreshingExperienceRef = useRef(false);
+  const lastSeenCompletedRef = useRef(0);
 
   // Sync tab with search params
   const handleTabChange = (tab: DashboardTab) => {
@@ -80,8 +93,8 @@ export const DashboardPage: React.FC = () => {
   }, []);
 
   // Fetch wallet balance
-  const loadBalance = useCallback(async () => {
-    setIsLoadingBalance(true);
+  const loadBalance = useCallback(async (silent = false) => {
+    if (!silent) setIsLoadingBalance(true);
     try {
       const res = await fetchWalletBalance();
       if (res && res.success) {
@@ -89,7 +102,7 @@ export const DashboardPage: React.FC = () => {
       }
     } catch {}
     finally {
-      setIsLoadingBalance(false);
+      if (!silent) setIsLoadingBalance(false);
     }
   }, []);
 
@@ -99,6 +112,7 @@ export const DashboardPage: React.FC = () => {
       const res = await fetchUserOrders(20, 0);
       if (res && res.success) {
         setOrders(res.items);
+        setOrdersLoaded(true);
       }
     } catch {}
   }, []);
@@ -108,6 +122,73 @@ export const DashboardPage: React.FC = () => {
     loadBalance();
     loadOrdersSummary();
   }, [loadPlans, loadBalance, loadOrdersSummary]);
+
+  useLiveRefresh(async () => {
+    await Promise.all([loadBalance(true), loadOrdersSummary()]);
+  }, 8_000);
+
+  useEffect(() => {
+    if (!ordersLoaded || !user || refreshingExperienceRef.current) return;
+
+    const newestCompleted = orders
+      .filter((order) => (
+        order.status === 'completed'
+        && (order.fulfillment_mode_snapshot !== 'apk_download' || Boolean(order.download_accessed_at))
+      ))
+      .sort((a, b) => b.id - a.id)[0];
+    if (!newestCompleted) return;
+
+    const storageKey = `locket:last-completed-order:${user.id}`;
+    let lastSeenOrderId = lastSeenCompletedRef.current;
+    try {
+      lastSeenOrderId = Math.max(lastSeenOrderId, Number(localStorage.getItem(storageKey) || 0));
+    } catch {
+      // The in-memory guard below still prevents duplicate prompts this session.
+    }
+    if (newestCompleted.id <= lastSeenOrderId) return;
+
+    refreshingExperienceRef.current = true;
+    lastSeenCompletedRef.current = newestCompleted.id;
+    try {
+      localStorage.setItem(storageKey, String(newestCompleted.id));
+    } catch {
+      // Storage can be disabled in privacy mode.
+    }
+
+    toast.success(
+      'Dịch vụ đã hoàn tất',
+      `Cảm ơn bạn đã sử dụng ${newestCompleted.plan_name_snapshot}. Chúc bạn có trải nghiệm thật vui!`,
+      { duration: 6_000, dedupeKey: `completed-order-${newestCompleted.id}` }
+    );
+
+    setReviewPromptOrder(newestCompleted);
+    void reviewState.refreshMyReview().finally(() => {
+      refreshingExperienceRef.current = false;
+    });
+  }, [orders, ordersLoaded, reviewState.refreshMyReview, toast, user]);
+
+  useEffect(() => {
+    if (!reviewPromptOrder || reviewPromptOpen || reviewState.myReviewLoading) return;
+    if (reviewState.hasReview) {
+      setReviewPromptOrder(null);
+      return;
+    }
+    if (!reviewState.isEligible || hasActiveOverlay) return;
+
+    const timer = window.setTimeout(() => setReviewPromptOpen(true), 500);
+    return () => window.clearTimeout(timer);
+  }, [hasActiveOverlay, reviewPromptOpen, reviewPromptOrder, reviewState.hasReview, reviewState.isEligible, reviewState.myReviewLoading]);
+
+  useLiveRefresh(
+    () => reviewState.refreshMyReview(),
+    10_000,
+    Boolean(reviewPromptOrder && !reviewPromptOpen && !reviewState.hasReview)
+  );
+
+  const closeReviewExperience = useCallback(() => {
+    setReviewPromptOpen(false);
+    setReviewPromptOrder(null);
+  }, []);
 
   const activeOrdersCount = orders.filter(
     (o) => o.status === 'awaiting_queue' || o.status === 'queued' || o.status === 'processing'
@@ -407,6 +488,16 @@ export const DashboardPage: React.FC = () => {
           </div>
         </main>
       </div>
+
+      <PostServiceReviewPrompt
+        isOpen={reviewPromptOpen}
+        order={reviewPromptOrder}
+        myReview={reviewState.myReview}
+        onClose={closeReviewExperience}
+        onSubmit={reviewState.submitReview}
+        onUpdate={reviewState.updateReview}
+        onDelete={reviewState.deleteReview}
+      />
 
       {/* Mobile Bottom Navigation Bar */}
       <nav

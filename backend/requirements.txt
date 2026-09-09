@@ -4,3 +4,5 @@ python-dotenv>=0.19.0
 gunicorn>=21.2.0
 PyJWT>=2.10,<3
 Pillow>=10.0.0
+cloudinary>=1.41.0
+pillow-heif>=0.18.0

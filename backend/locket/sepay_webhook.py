@@ -74,6 +74,31 @@ def _normalize_account_number(value) -> str:
     return re.sub(r"[\s.-]", "", str(value or "")).upper()
 
 
+def _configured_webhook_accounts() -> frozenset[str]:
+    """Return the exact bank-account identifiers accepted from SePay.
+
+    Banks can render a VietQR account alias (for example ``HUYDEV204``) while
+    SePay reports the underlying numeric account in ``accountNumber``.  Keep
+    QR rendering and webhook reconciliation as separate settings, but include
+    the QR identifier as a backwards-compatible accepted value.
+    """
+    raw_accounts = os.getenv("SEPAY_WEBHOOK_ACCOUNT_NUMBERS", "")
+    candidates = re.split(r"[,;\r\n]+", raw_accounts)
+    candidates.append(payment_service.get_bank_config().get("account_no", ""))
+    return frozenset(
+        normalized
+        for normalized in (_normalize_account_number(value) for value in candidates)
+        if normalized
+    )
+
+
+def _masked_account(value: str) -> str:
+    normalized = _normalize_account_number(value)
+    if len(normalized) <= 4:
+        return "*" * len(normalized)
+    return f"{'*' * (len(normalized) - 4)}{normalized[-4:]}"
+
+
 def _extract_transfer_code(payload: dict) -> str | None:
     """Extract this application's transfer code from SePay fields.
 
@@ -109,14 +134,15 @@ def _process_payment(payload: dict):
         )
         return _acknowledge()
 
-    configured_account = _normalize_account_number(
-        payment_service.get_bank_config().get("account_no")
-    )
     received_account = _normalize_account_number(payload.get("accountNumber"))
-    if not configured_account or not received_account or received_account != configured_account:
+    configured_accounts = _configured_webhook_accounts()
+    if not received_account or received_account not in configured_accounts:
         current_app.logger.warning(
-            "Ignored SePay transaction for an unexpected account transaction_id=%s",
+            "Ignored SePay transaction for an unexpected account "
+            "transaction_id=%s received_account=%s configured_account_count=%s",
             payload["id"],
+            _masked_account(received_account),
+            len(configured_accounts),
         )
         return _acknowledge()
 

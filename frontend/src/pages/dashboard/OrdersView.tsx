@@ -26,6 +26,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { ModalPortal } from '../../components/common/ModalPortal';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 
 const ORDER_STATUS_LABELS: Record<string, string> = {
   awaiting_payment: 'Chờ thanh toán',
@@ -81,8 +82,8 @@ export const OrdersView: React.FC = () => {
   const [isCreatingTicket, setIsCreatingTicket] = useState(false);
   const [ticketError, setTicketError] = useState<string | null>(null);
 
-  const loadOrders = useCallback(async (p: number) => {
-    setIsLoading(true);
+  const loadOrders = useCallback(async (p: number, silent = false) => {
+    if (!silent) setIsLoading(true);
     try {
       const res = await fetchUserOrders(limit, p * limit);
       if (res && res.success) {
@@ -91,13 +92,15 @@ export const OrdersView: React.FC = () => {
       }
     } catch {}
     finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
   }, []);
 
   useEffect(() => {
     loadOrders(page);
   }, [page, loadOrders]);
+
+  useLiveRefresh(() => loadOrders(page, true), 8_000);
 
   useEffect(() => {
     fetchPlatformConfig()

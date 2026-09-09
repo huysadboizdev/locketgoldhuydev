@@ -67,7 +67,7 @@ def create_app():
         return jsonify({
             "success": False,
             "error": "request_too_large",
-            "msg": "Dung lượng yêu cầu vượt quá giới hạn cho phép (tối đa 10MB).",
+            "msg": "Dung lượng yêu cầu vượt quá giới hạn cho phép (tối đa 26MB).",
         }), 413
 
     app.register_blueprint(public_bp)

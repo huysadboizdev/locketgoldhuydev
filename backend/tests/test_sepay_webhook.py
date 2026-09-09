@@ -20,6 +20,7 @@ class SePayWebhookTestCase(unittest.TestCase):
                 "PAYMENT_WEBHOOK_ENABLED",
                 "SEPAY_WEBHOOK_SECRET",
                 "SEPAY_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS",
+                "SEPAY_WEBHOOK_ACCOUNT_NUMBERS",
             )
         }
         os.environ["PAYMENT_WEBHOOK_ENABLED"] = "1"

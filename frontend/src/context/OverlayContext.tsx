@@ -13,6 +13,7 @@ interface OverlayContextValue {
   getLayerIndex: (id: string) => number;
   isTopLayer: (id: string) => boolean;
   hasBlockingDialog: boolean;
+  hasActiveOverlay: boolean;
 }
 
 const OverlayContext = createContext<OverlayContextValue | null>(null);
@@ -49,6 +50,7 @@ export const OverlayProvider: React.FC<React.PropsWithChildren> = ({ children })
       getLayerIndex,
       isTopLayer,
       hasBlockingDialog: layers.some((layer) => layer.kind === 'dialog'),
+      hasActiveOverlay: layers.length > 0,
     }),
     [getLayerIndex, isTopLayer, layers, registerLayer, unregisterLayer]
   );

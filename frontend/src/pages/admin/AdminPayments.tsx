@@ -17,6 +17,7 @@ import {
   manuallyConfirmAdminPayment,
   rejectAdminPayment,
 } from '../../api/adminEndpoints';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 
 export const AdminPayments: React.FC = () => {
   const [payments, setPayments] = useState<any[]>([]);
@@ -43,10 +44,12 @@ export const AdminPayments: React.FC = () => {
   const [rejectReason, setRejectReason] = useState('');
   const [isRejecting, setIsRejecting] = useState(false);
 
-  const loadPayments = useCallback(async () => {
+  const loadPayments = useCallback(async (silent = false) => {
     try {
-      setIsLoading(true);
-      setError(null);
+      if (!silent) {
+        setIsLoading(true);
+        setError(null);
+      }
       const res = await fetchAdminPayments({
         q: searchQuery,
         status: statusFilter,
@@ -62,15 +65,17 @@ export const AdminPayments: React.FC = () => {
         if (page > nextPages) setPage(nextPages);
       }
     } catch (err: any) {
-      setError(err.message || 'Không thể tải danh sách thanh toán.');
+      if (!silent) setError(err.message || 'Không thể tải danh sách thanh toán.');
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
   }, [searchQuery, statusFilter, purposeFilter, page, limit]);
 
   useEffect(() => {
     loadPayments();
   }, [loadPayments]);
+
+  useLiveRefresh(() => loadPayments(true), 8_000);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -209,7 +214,7 @@ export const AdminPayments: React.FC = () => {
 
           <button
             type="button"
-            onClick={loadPayments}
+            onClick={() => void loadPayments()}
             disabled={isLoading}
             className="rounded-xl border border-zinc-800 bg-zinc-950 p-2.5 text-zinc-400 hover:text-white hover:border-zinc-700 transition-colors"
             title="Tải lại"

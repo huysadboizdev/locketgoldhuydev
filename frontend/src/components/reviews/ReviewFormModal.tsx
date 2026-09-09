@@ -76,17 +76,20 @@ export const ReviewFormModal: React.FC<ReviewFormModalProps> = ({
 
     setErrorMessage(null);
 
-    const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
-    const invalidType = files.find((file) => !allowedTypes.has(file.type));
+    const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
+    const invalidType = files.find((file) => (
+      !allowedTypes.has(file.type.toLowerCase())
+      && !/\.(?:jpe?g|png|webp|heic|heif)$/i.test(file.name)
+    ));
     if (invalidType) {
-      setErrorMessage(`Ảnh "${invalidType.name}" không đúng định dạng. Chỉ hỗ trợ JPG, PNG hoặc WebP.`);
+      setErrorMessage(`Ảnh "${invalidType.name}" không đúng định dạng. Chỉ hỗ trợ JPG, PNG, WebP hoặc HEIC.`);
       e.target.value = '';
       return;
     }
 
-    const oversizedFile = files.find((file) => file.size > 3 * 1024 * 1024);
+    const oversizedFile = files.find((file) => file.size > 8 * 1024 * 1024);
     if (oversizedFile) {
-      setErrorMessage(`Ảnh "${oversizedFile.name}" vượt quá dung lượng tối đa 3MB.`);
+      setErrorMessage(`Ảnh "${oversizedFile.name}" vượt quá dung lượng tối đa 8MB.`);
       e.target.value = '';
       return;
     }
@@ -206,6 +209,7 @@ export const ReviewFormModal: React.FC<ReviewFormModalProps> = ({
         isOpen={isOpen}
         onClose={onClose}
         dismissible={!isSubmitting && !isDeleting && !showConfirmDelete}
+        backdropClassName="bg-zinc-950/45 backdrop-blur-[2px]"
         className="max-w-2xl max-h-[calc(100dvh-2rem)] sm:max-h-[90dvh]"
         ariaLabelledBy="review-modal-title"
       >
@@ -380,7 +384,7 @@ export const ReviewFormModal: React.FC<ReviewFormModalProps> = ({
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept="image/jpeg,image/png,image/webp"
+                    accept=".jpg,.jpeg,.png,.webp,.heic,.heif,image/jpeg,image/png,image/webp,image/heic,image/heif"
                     multiple
                     className="hidden"
                     onChange={handleFileChange}

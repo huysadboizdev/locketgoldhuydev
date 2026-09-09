@@ -13,13 +13,16 @@ const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [theme, setCurrentTheme] = useState<Theme>(() => {
     if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('theme') as Theme | null;
-      if (stored === 'light' || stored === 'dark') {
-        return stored;
+      try {
+        const stored = localStorage.getItem('theme') as Theme | null;
+        if (stored === 'light' || stored === 'dark') {
+          return stored;
+        }
+      } catch {
+        // Browsers with blocked storage still use the safe light default.
       }
-      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     }
-    return 'dark';
+    return 'light';
   });
 
   useEffect(() => {
@@ -43,20 +46,6 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       metaColorScheme.setAttribute('content', theme);
     }
   }, [theme]);
-
-  // Listen to system preference changes if user hasn't overridden
-  useEffect(() => {
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    const handleChange = (e: MediaQueryListEvent) => {
-      const stored = localStorage.getItem('theme');
-      if (!stored) {
-        setCurrentTheme(e.matches ? 'dark' : 'light');
-      }
-    };
-
-    mediaQuery.addEventListener('change', handleChange);
-    return () => mediaQuery.removeEventListener('change', handleChange);
-  }, []);
 
   const toggleTheme = () => {
     setCurrentTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));

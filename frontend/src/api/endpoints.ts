@@ -84,6 +84,7 @@ export async function fetchSiteSettings(): Promise<SiteSettingsResponse> {
 export async function fetchRecentHistory(): Promise<RecentHistoryResponse> {
   return apiClient<RecentHistoryResponse>('/api/recent-history', {
     method: 'GET',
+    cache: 'no-store',
   });
 }
 
@@ -225,6 +226,7 @@ export async function fetchMyActiveQueue(): Promise<ActiveQueueResponse> {
 export async function fetchPublicReviews(): Promise<ReviewsResponse> {
   return apiClient<ReviewsResponse>('/api/reviews', {
     method: 'GET',
+    cache: 'no-store',
   });
 }
 
@@ -267,7 +269,7 @@ export async function deleteMyReviewApi(): Promise<{ success: boolean; msg: stri
 }
 
 export async function fetchPublicCreators(): Promise<CreatorsResponse> {
-  return apiClient<CreatorsResponse>('/api/creators', { method: 'GET' });
+  return apiClient<CreatorsResponse>('/api/creators', { method: 'GET', cache: 'no-store' });
 }
 
 /* =========================================================================
@@ -289,6 +291,7 @@ export async function fetchPlans(): Promise<PlansResponse> {
 export async function fetchWalletBalance(): Promise<WalletResponse> {
   return apiClient<WalletResponse>('/api/wallet', {
     method: 'GET',
+    cache: 'no-store',
   });
 }
 
@@ -298,6 +301,7 @@ export async function fetchWalletBalance(): Promise<WalletResponse> {
 export async function fetchWalletTransactions(limit = 20, offset = 0): Promise<WalletTransactionsResponse> {
   return apiClient<WalletTransactionsResponse>(`/api/wallet/transactions?limit=${limit}&offset=${offset}`, {
     method: 'GET',
+    cache: 'no-store',
   });
 }
 
@@ -349,6 +353,7 @@ export async function createPlanPayment(data: {
 export async function fetchPaymentStatus(paymentCode: string): Promise<PaymentStatusResponse> {
   return apiClient<PaymentStatusResponse>(`/api/payments/${encodeURIComponent(paymentCode)}`, {
     method: 'GET',
+    cache: 'no-store',
   });
 }
 
@@ -392,6 +397,7 @@ export async function purchasePlanWithCoin(data: {
 export async function fetchUserOrders(limit = 20, offset = 0): Promise<OrdersListResponse> {
   return apiClient<OrdersListResponse>(`/api/orders?limit=${limit}&offset=${offset}`, {
     method: 'GET',
+    cache: 'no-store',
   });
 }
 

@@ -882,6 +882,7 @@ def review_set_status(review_id: int):
 @admin_api_bp.route("/reviews/<int:review_id>", methods=["DELETE"])
 @admin_token_required
 def review_delete(review_id: int):
+    from .image_storage import delete_stored_image
     from .reviews import get_storage_root, invalidate_reviews_cache
     storage_root = get_storage_root()
     storage_names = db.delete_review(review_id)
@@ -889,10 +890,7 @@ def review_delete(review_id: int):
         return jsonify({"success": False, "error": "not_found", "msg": "Không tìm thấy đánh giá cần xóa."}), 404
 
     for name in storage_names:
-        try:
-            os.remove(os.path.join(storage_root, name))
-        except OSError:
-            pass
+        delete_stored_image(name, storage_root, "review")
 
     invalidate_reviews_cache()
     _audit("review_delete", "review", review_id, before=None, after=None)
@@ -902,7 +900,8 @@ def review_delete(review_id: int):
 @admin_api_bp.route("/reviews/images/<storage_name>", methods=["GET"])
 @admin_token_required
 def review_image(storage_name: str):
-    from flask import abort, send_file
+    from flask import abort
+    from .image_storage import serve_stored_image
     from .reviews import SAFE_FILENAME_REGEX, get_storage_root
 
     if not SAFE_FILENAME_REGEX.match(storage_name):
@@ -912,14 +911,14 @@ def review_image(storage_name: str):
     if not img_row:
         abort(404)
 
-    storage_root = get_storage_root()
-    file_path = os.path.join(storage_root, storage_name)
-    if not os.path.exists(file_path):
+    resp = serve_stored_image(
+        storage_name,
+        get_storage_root(),
+        "review",
+        "private, no-store",
+    )
+    if resp is None:
         abort(404)
-
-    resp = send_file(file_path, mimetype="image/webp")
-    resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers["Cache-Control"] = "private, no-store"
     return resp
 
 
@@ -1133,21 +1132,23 @@ def creator_delete(creator_id):
 @admin_api_bp.route("/creators/images/<storage_name>", methods=["GET"])
 @admin_token_required
 def creator_admin_image(storage_name):
-    from flask import abort, send_file
+    from flask import abort
     from .creators import (
         SAFE_CREATOR_FILENAME,
-        creator_image_mimetype,
         get_creator_storage_root,
     )
+    from .image_storage import serve_stored_image
 
     if not SAFE_CREATOR_FILENAME.fullmatch(storage_name) or not db.get_creator_by_storage_name(storage_name):
         abort(404)
-    path = os.path.join(get_creator_storage_root(), storage_name)
-    if not os.path.exists(path):
+    response = serve_stored_image(
+        storage_name,
+        get_creator_storage_root(),
+        "creator",
+        "private, no-store",
+    )
+    if response is None:
         abort(404)
-    response = send_file(path, mimetype=creator_image_mimetype(storage_name))
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Cache-Control"] = "private, no-store"
     return response
 
 

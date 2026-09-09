@@ -130,6 +130,20 @@ ACCESS_TOKEN_TTL_SECONDS=600
 REFRESH_TOKEN_TTL_SECONDS=2592000
 REFRESH_COOKIE_NAME=locket_refresh
 
+# VietQR + SePay (both wallet top-up and direct plan purchase)
+VIETQR_BANK_ID=TPB
+VIETQR_ACCOUNT_NO=<bank_alias_or_account_used_to_generate_qr>
+VIETQR_ACCOUNT_NAME=<bank_account_holder_name>
+VIETQR_TEMPLATE=compact2
+SEPAY_WEBHOOK_ACCOUNT_NUMBERS=<real_numeric_account_returned_by_sepay>
+PAYMENT_TRANSFER_PREFIX=LOCKETGOLDHUYDEV
+PAYMENT_TRANSFER_DIGITS=3
+PAYMENT_TTL_SECONDS=600
+PAYMENT_CODE_REUSE_DELAY_SECONDS=86400
+PAYMENT_WEBHOOK_ENABLED=1
+SEPAY_WEBHOOK_SECRET=<same_hmac_secret_configured_in_sepay>
+SEPAY_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS=300
+
 # Optional
 EMAIL=
 PASSWORD=
@@ -141,6 +155,12 @@ TELEGRAM_NOTIFY_NEW_ORDERS=1
 TELEGRAM_NOTIFY_ACTIVATION_SUCCESS=1
 TELEGRAM_ADMIN_ORDERS_URL=https://locketgoldhuy.io.vn/admin?tab=orders
 ```
+
+The SePay webhook URL must be
+`https://locketgoldhuy.io.vn/api/payment/webhook`. `VIETQR_ACCOUNT_NO` may be
+a bank alias used for QR generation, while `SEPAY_WEBHOOK_ACCOUNT_NUMBERS`
+must contain the exact numeric `accountNumber` SePay sends back. Separate
+multiple accepted values with commas.
 
 Khoá file bảo mật:
 

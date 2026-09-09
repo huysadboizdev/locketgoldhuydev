@@ -23,6 +23,7 @@ os.environ["VIETQR_BANK_ID"] = "TPB"
 os.environ["VIETQR_ACCOUNT_NO"] = "HUYDEV204"
 os.environ["VIETQR_ACCOUNT_NAME"] = "HA QUANG HUY"
 os.environ["VIETQR_TEMPLATE"] = "compact2"
+os.environ["SEPAY_WEBHOOK_ACCOUNT_NUMBERS"] = "0123456789"
 os.environ["PAYMENT_TRANSFER_PREFIX"] = "LOCKETGOLDHUYDEV"
 os.environ["PAYMENT_TRANSFER_DIGITS"] = "3"
 os.environ["PAYMENT_TTL_SECONDS"] = "600"
@@ -638,7 +639,9 @@ class VietQRPaymentSystemTestCase(unittest.TestCase):
             "id": 9000001,
             "gateway": "TPBank",
             "transactionDate": "2026-09-09 15:30:00",
-            "accountNumber": "HUYDEV204",
+            # SePay commonly returns the real numeric bank account even when
+            # VietQR was generated with a bank-supported account alias.
+            "accountNumber": "0123456789",
             "code": None,
             "content": f"NAP TIEN {created['transfer_code']}",
             "transferType": "in",
@@ -676,7 +679,7 @@ class VietQRPaymentSystemTestCase(unittest.TestCase):
         base_payload = {
             "id": 9000002,
             "gateway": "TPBank",
-            "accountNumber": "HUYDEV204",
+            "accountNumber": "0123456789",
             "code": created["transfer_code"],
             "content": created["transfer_code"],
             "transferType": "in",
@@ -723,7 +726,7 @@ class VietQRPaymentSystemTestCase(unittest.TestCase):
         payload = {
             "id": 9000004,
             "gateway": "TPBank",
-            "accountNumber": "HUYDEV204",
+            "accountNumber": "0123456789",
             "code": created["transfer_code"],
             "content": f"THANH TOAN {created['transfer_code']}",
             "transferType": "in",

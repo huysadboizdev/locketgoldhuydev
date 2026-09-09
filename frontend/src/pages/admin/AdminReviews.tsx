@@ -18,6 +18,7 @@ import {
   deleteAdminReview,
 } from '../../api/adminEndpoints';
 import type { AdminReviewItem } from '../../types/admin';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 
 export const AdminReviews: React.FC = () => {
   const [reviews, setReviews] = useState<AdminReviewItem[]>([]);
@@ -35,10 +36,12 @@ export const AdminReviews: React.FC = () => {
   const [deletingReview, setDeletingReview] = useState<AdminReviewItem | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const loadReviews = useCallback(async () => {
+  const loadReviews = useCallback(async (silent = false) => {
     try {
-      setIsLoading(true);
-      setError(null);
+      if (!silent) {
+        setIsLoading(true);
+        setError(null);
+      }
       const res = await fetchAdminReviews({
         status: '',
         page,
@@ -52,15 +55,17 @@ export const AdminReviews: React.FC = () => {
         if (page > nextPages) setPage(nextPages);
       }
     } catch (err: any) {
-      setError(err.message || 'Không thể tải danh sách đánh giá.');
+      if (!silent) setError(err.message || 'Không thể tải danh sách đánh giá.');
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
   }, [page, limit]);
 
   useEffect(() => {
     loadReviews();
   }, [loadReviews]);
+
+  useLiveRefresh(() => loadReviews(true), 8_000);
 
   const handleDeleteConfirm = async () => {
     if (!deletingReview) return;
@@ -92,7 +97,7 @@ export const AdminReviews: React.FC = () => {
 
         <button
           type="button"
-          onClick={loadReviews}
+          onClick={() => void loadReviews()}
           disabled={isLoading}
           className="flex items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2 text-xs font-semibold text-zinc-300 hover:text-white transition-colors"
         >

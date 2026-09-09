@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowRight,
   BadgeCheck,
@@ -13,6 +13,7 @@ import {
 import { fetchPublicCreators } from '../../api/endpoints';
 import type { PublicCreator, ReviewImage } from '../../types/api';
 import { ReviewLightbox } from '../reviews/ReviewLightbox';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 
 const formatFollowers = (value?: number | null) => {
   if (value == null) return null;
@@ -35,23 +36,22 @@ export const CreatorsSection: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [lightbox, setLightbox] = useState<{ images: ReviewImage[]; index: number } | null>(null);
 
-  useEffect(() => {
-    let active = true;
-    fetchPublicCreators()
-      .then((response) => {
-        if (active && response.success) setCreators(response.creators || []);
-      })
-      .catch(() => {
-        // This optional showcase must never block the rest of the landing page.
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
+  const loadCreators = useCallback(async (silent = false) => {
+    try {
+      const response = await fetchPublicCreators();
+      if (response.success) setCreators(response.creators || []);
+    } catch {
+      // This optional showcase must never block the rest of the landing page.
+    } finally {
+      if (!silent) setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadCreators();
+  }, [loadCreators]);
+
+  useLiveRefresh(() => loadCreators(true), 10_000);
 
   const reviewStats = useMemo(() => {
     const ratings = creators

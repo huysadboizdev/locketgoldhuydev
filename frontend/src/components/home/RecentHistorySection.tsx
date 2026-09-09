@@ -1,38 +1,36 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Clock, CheckCircle2, AlertCircle, WifiOff } from 'lucide-react';
 import { fetchRecentHistory } from '../../api/endpoints';
 import { formatRelativeTime } from '../../utils/format';
 import type { HistoryItem } from '../../types/api';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 
 export const RecentHistorySection: React.FC = () => {
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [isOffline, setIsOffline] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetchRecentHistory();
+      if (res.success) {
+        setItems(res.items || []);
+        setIsOffline(false);
+      }
+    } catch {
+      setIsOffline(true);
+    } finally {
+      setLoading(false);
+      setHasLoaded(true);
+    }
+  }, []);
 
   useEffect(() => {
-    let mounted = true;
-    async function load() {
-      try {
-        const res = await fetchRecentHistory();
-        if (mounted && res.success) {
-          setItems(res.items || []);
-          setIsOffline(false);
-        }
-      } catch {
-        if (mounted) {
-          setIsOffline(true);
-        }
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    }
-    load();
-    const timer = setInterval(load, 15000);
-    return () => {
-      mounted = false;
-      clearInterval(timer);
-    };
-  }, []);
+    void load();
+  }, [load]);
+
+  useLiveRefresh(load, 8_000, hasLoaded);
 
   return (
     <section className="mx-auto max-w-4xl px-4 sm:px-6 py-10">
@@ -44,7 +42,13 @@ export const RecentHistorySection: React.FC = () => {
               LỊCH SỬ KÍCH HOẠT GẦN NHẤT
             </h3>
           </div>
-          <span className="text-[11px] text-zinc-500 dark:text-zinc-400">24 giờ qua</span>
+          <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+            <span className="relative flex h-2 w-2" aria-hidden="true">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-50" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+            </span>
+            Cập nhật trực tiếp
+          </span>
         </div>
 
         {/* Loading Skeletons */}

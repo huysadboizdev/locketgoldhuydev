@@ -14,6 +14,7 @@ import {
 import { StatCard } from '../../components/admin/StatCard';
 import { fetchAdminOverview } from '../../api/adminEndpoints';
 import type { AdminOverviewResponse, AdminTimeRange } from '../../types/admin';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 
 interface AdminOverviewProps {
   onNavigateTab: (tab: any) => void;
@@ -24,12 +25,14 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({ onNavigateTab }) =
   const [data, setData] = useState<AdminOverviewResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
 
-  const loadOverview = useCallback(async (selectedRange: AdminTimeRange) => {
+  const loadOverview = useCallback(async (selectedRange: AdminTimeRange, silent = false) => {
     try {
-      setIsLoading(true);
-      setError(null);
+      if (!silent) {
+        setIsLoading(true);
+        setError(null);
+      }
       const res = await fetchAdminOverview(selectedRange);
       if (res.success) {
         setData(res);
@@ -37,9 +40,9 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({ onNavigateTab }) =
         setError('Không thể tải số liệu tổng quan.');
       }
     } catch (err: any) {
-      setError(err.message || 'Lỗi kết nối máy chủ');
+      if (!silent) setError(err.message || 'Lỗi kết nối máy chủ');
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
   }, []);
 
@@ -47,13 +50,7 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({ onNavigateTab }) =
     loadOverview(range);
   }, [range, loadOverview]);
 
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const timer = setInterval(() => {
-      loadOverview(range);
-    }, 15000);
-    return () => clearInterval(timer);
-  }, [autoRefresh, range, loadOverview]);
+  useLiveRefresh(() => loadOverview(range, true), 8_000, autoRefresh);
 
   const formatVnd = (amount: number = 0) => {
     return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(amount);
@@ -98,7 +95,7 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({ onNavigateTab }) =
               onChange={(e) => setAutoRefresh(e.target.checked)}
               className="h-3.5 w-3.5 rounded border-zinc-700 bg-zinc-950 text-amber-500 focus:ring-amber-500"
             />
-            <span>Tự động làm mới (15s)</span>
+            <span>Tự động làm mới (8s)</span>
           </label>
 
           <button

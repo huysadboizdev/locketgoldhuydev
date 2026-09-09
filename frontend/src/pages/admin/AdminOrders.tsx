@@ -27,6 +27,7 @@ import {
 } from '../../api/adminEndpoints';
 import { AdminActivationOrder } from '../../types/admin';
 import { ModalPortal } from '../../components/common/ModalPortal';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 
 export const AdminOrders: React.FC = () => {
   const [orders, setOrders] = useState<AdminActivationOrder[]>([]);
@@ -55,10 +56,12 @@ export const AdminOrders: React.FC = () => {
   const [isSubmittingAction, setIsSubmittingAction] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const loadOrders = useCallback(async () => {
+  const loadOrders = useCallback(async (silent = false) => {
     try {
-      setIsLoading(true);
-      setError(null);
+      if (!silent) {
+        setIsLoading(true);
+        setError(null);
+      }
       const res = await fetchAdminOrders({
         q: searchQuery,
         status: statusFilter,
@@ -79,15 +82,17 @@ export const AdminOrders: React.FC = () => {
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Không thể tải danh sách đơn kích hoạt.';
-      setError(msg);
+      if (!silent) setError(msg);
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
   }, [searchQuery, statusFilter, platformFilter, fulfillmentFilter, page, limit]);
 
   useEffect(() => {
     loadOrders();
   }, [loadOrders]);
+
+  useLiveRefresh(() => loadOrders(true), 8_000);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -306,7 +311,7 @@ export const AdminOrders: React.FC = () => {
 
           <button
             type="button"
-            onClick={loadOrders}
+            onClick={() => void loadOrders()}
             disabled={isLoading}
             className="rounded-xl border border-zinc-800 bg-zinc-950 p-2.5 text-zinc-400 hover:text-white hover:border-zinc-700 transition-colors"
             title="Tải lại"

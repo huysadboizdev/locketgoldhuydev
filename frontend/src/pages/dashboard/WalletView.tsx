@@ -10,6 +10,7 @@ import {
 } from '../../api/endpoints';
 import { PaymentQrPanel } from '../../components/payment/PaymentQrPanel';
 import { usePaymentPolling } from '../../hooks/usePaymentPolling';
+import { useToast } from '../../hooks/useToast';
 import {
   Coins,
   ArrowUpRight,
@@ -47,6 +48,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
   onRefreshBalance,
   prefilledCoin,
 }) => {
+  const toast = useToast();
   const [selectedCoin, setSelectedCoin] = useState<number>(prefilledCoin || 50);
   const [customCoinInput, setCustomCoinInput] = useState<string>('');
   const [isCustom, setIsCustom] = useState<boolean>(false);
@@ -58,6 +60,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
   const [isRenewingTopup, setIsRenewingTopup] = useState(false);
   const [renewError, setRenewError] = useState<string | null>(null);
   const topupAttemptRef = useRef<{ key: string; amountVnd: number } | null>(null);
+  const notifiedPaidPaymentsRef = useRef<Set<number>>(new Set());
 
   // Transactions state
   const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
@@ -187,6 +190,14 @@ export const WalletView: React.FC<WalletViewProps> = ({
           : null
       );
       if (status === 'paid') {
+        if (!notifiedPaidPaymentsRef.current.has(pay.id)) {
+          notifiedPaidPaymentsRef.current.add(pay.id);
+          toast.success(
+            'Nạp Coin thành công',
+            `Cảm ơn bạn! ${pay.coin_amount.toLocaleString('vi-VN')} Coin đã được cộng vào ví và sẵn sàng sử dụng.`,
+            { duration: 6_000, dedupeKey: `wallet-topup-${pay.id}` }
+          );
+        }
         onRefreshBalance();
         loadTransactions(0);
       }

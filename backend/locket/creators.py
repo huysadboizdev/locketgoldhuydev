@@ -2,22 +2,34 @@
 
 import io
 import os
-import re
 import time
-import uuid
 import warnings
 
-from flask import Blueprint, abort, current_app, jsonify, make_response, send_file
+from flask import Blueprint, abort, current_app, jsonify, make_response
 from PIL import Image, ImageDraw, ImageOps, ImageStat
 
 from . import db
+from .image_storage import (
+    ImageStorageConfigurationError,
+    ImageStorageUploadError,
+    SAFE_STORAGE_NAME,
+    delete_stored_image,
+    save_processed_image,
+    serve_stored_image,
+)
+
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass
 
 
 creators_bp = Blueprint("creators", __name__, url_prefix="/api/creators")
 
 MAX_CREATOR_IMAGE_SIZE = 5 * 1024 * 1024
 MAX_CREATOR_PIXELS = 20_000_000
-SAFE_CREATOR_FILENAME = re.compile(r"^[a-f0-9]{32}\.(?:webp|jpg)$")
+SAFE_CREATOR_FILENAME = SAFE_STORAGE_NAME
 
 
 def creator_image_mimetype(storage_name):
@@ -39,8 +51,6 @@ def process_creator_screenshot(file_storage, crop_percent=24):
     The lower-left bio area inside the kept header is covered while the
     right-side TikTok avatar remains visible in full.
     """
-    temp_path = None
-    target_path = None
     try:
         crop_percent = max(12, min(45, int(crop_percent)))
         raw = file_storage.read(MAX_CREATOR_IMAGE_SIZE + 1)
@@ -52,8 +62,8 @@ def process_creator_screenshot(file_storage, crop_percent=24):
         with warnings.catch_warnings():
             warnings.filterwarnings("error", category=Image.DecompressionBombWarning)
             with Image.open(io.BytesIO(raw)) as check:
-                if check.format not in ("JPEG", "PNG", "WEBP"):
-                    return None, "Chỉ hỗ trợ ảnh JPG, PNG hoặc WebP."
+                if check.format not in ("JPEG", "PNG", "WEBP", "HEIF", "HEIC"):
+                    return None, "Chỉ hỗ trợ ảnh JPG, PNG, WebP hoặc HEIC."
                 if getattr(check, "is_animated", False) or getattr(check, "n_frames", 1) > 1:
                     return None, "Không hỗ trợ ảnh động."
                 width, height = check.size
@@ -91,32 +101,25 @@ def process_creator_screenshot(file_storage, crop_percent=24):
             # do not include WebP; a clean JPEG derivative is a safe fallback.
             encoded = io.BytesIO()
             extension = "webp"
-            mimetype = "image/webp"
             try:
                 image.save(encoded, format="WEBP", quality=84, method=6)
             except (KeyError, OSError, ValueError):
                 encoded = io.BytesIO()
                 image.save(encoded, format="JPEG", quality=88, optimize=True, progressive=True)
                 extension = "jpg"
-                mimetype = "image/jpeg"
 
-            target_dir = get_creator_storage_root()
-            os.makedirs(target_dir, exist_ok=True)
-            storage_name = f"{uuid.uuid4().hex}.{extension}"
-            target_path = os.path.join(target_dir, storage_name)
-            temp_path = f"{target_path}.tmp"
-            with open(temp_path, "xb") as output:
-                output.write(encoded.getvalue())
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temp_path, target_path)
-            temp_path = None
+            stored = save_processed_image(
+                encoded.getvalue(),
+                get_creator_storage_root(),
+                extension,
+                "creator",
+            )
             return {
-                "storage_name": storage_name,
+                "storage_name": stored["storage_name"],
                 "width": width,
                 "height": height,
-                "file_size": os.path.getsize(target_path),
-                "mime_type": mimetype,
+                "file_size": stored["file_size"],
+                "mime_type": stored["mime_type"],
             }, None
     except (Image.DecompressionBombError, Image.DecompressionBombWarning):
         return None, "Ảnh vượt quá giới hạn an toàn."
@@ -126,31 +129,20 @@ def process_creator_screenshot(file_storage, crop_percent=24):
             get_creator_storage_root(),
         )
         return None, "Máy chủ chưa có quyền lưu ảnh KOL. Vui lòng kiểm tra thư mục CREATOR_STORAGE_ROOT."
+    except ImageStorageConfigurationError as exc:
+        current_app.logger.error("Creator image storage is not configured: %s", exc)
+        return None, str(exc)
+    except ImageStorageUploadError as exc:
+        return None, str(exc)
     except (OSError, ValueError, TypeError, KeyError) as exc:
         current_app.logger.warning(
             "Unable to process creator screenshot (%s)", type(exc).__name__
         )
-        if target_path and os.path.exists(target_path):
-            try:
-                os.remove(target_path)
-            except OSError:
-                pass
         return None, "Không thể xử lý ảnh TikTok. Vui lòng chọn ảnh khác."
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
 
 
 def delete_creator_image(storage_name):
-    if not storage_name or not SAFE_CREATOR_FILENAME.fullmatch(storage_name):
-        return
-    try:
-        os.remove(os.path.join(get_creator_storage_root(), storage_name))
-    except OSError:
-        pass
+    delete_stored_image(storage_name, get_creator_storage_root(), "creator")
 
 
 @creators_bp.route("", methods=["GET"])
@@ -200,10 +192,12 @@ def public_creator_image(storage_name):
         review = db.get_review_by_user_id(creator["user_id"])
         if not review or review.get("status") != "approved":
             abort(404)
-    path = os.path.join(get_creator_storage_root(), storage_name)
-    if not os.path.exists(path):
+    response = serve_stored_image(
+        storage_name,
+        get_creator_storage_root(),
+        "creator",
+        "public, max-age=300, must-revalidate",
+    )
+    if response is None:
         abort(404)
-    response = send_file(path, mimetype=creator_image_mimetype(storage_name), max_age=300)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
     return response

@@ -27,12 +27,24 @@ def configure(app):
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["SESSION_COOKIE_SECURE"] = behind_https
 
-    # Request size limit: max 10MB to prevent memory DoS on large uploads
-    app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
+    # Three mobile photos (up to 8MB each) plus multipart overhead.
+    app.config["MAX_CONTENT_LENGTH"] = 26 * 1024 * 1024
+
+    storage_provider = os.getenv("REVIEW_STORAGE_PROVIDER", "local").strip().lower()
+    if storage_provider not in {"local", "cloudinary"}:
+        storage_provider = "local"
+    app.config["REVIEW_STORAGE_PROVIDER"] = storage_provider
+    app.config["CLOUDINARY_CLOUD_NAME"] = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
+    app.config["CLOUDINARY_API_KEY"] = os.getenv("CLOUDINARY_API_KEY", "").strip()
+    app.config["CLOUDINARY_API_SECRET"] = os.getenv("CLOUDINARY_API_SECRET", "").strip()
+    app.config["CLOUDINARY_FOLDER"] = os.getenv("CLOUDINARY_FOLDER", "locket-gold/reviews").strip()
+    app.config["CLOUDINARY_CREATOR_FOLDER"] = os.getenv(
+        "CLOUDINARY_CREATOR_FOLDER", "locket-gold/creators"
+    ).strip()
 
     # Resolve review storage root after env is loaded
     storage_root = os.getenv("REVIEW_STORAGE_ROOT")
-    if behind_https and not storage_root:
+    if behind_https and storage_provider == "local" and not storage_root:
         raise RuntimeError(
             "CRITICAL: REVIEW_STORAGE_ROOT must be configured in production (BEHIND_HTTPS=1)."
         )

@@ -8,13 +8,14 @@ import {
 } from '../api/endpoints';
 import type { PublicReview, ReviewStats, UserReview } from '../types/api';
 import { useAuth } from '../context/AuthContext';
+import { useLiveRefresh } from './useLiveRefresh';
 
 export interface UseReviewsReturn {
   reviews: PublicReview[];
   stats: ReviewStats;
   loading: boolean;
   error: string | null;
-  refreshPublicReviews: () => Promise<void>;
+  refreshPublicReviews: (silent?: boolean) => Promise<void>;
 
   // User's own review & eligibility
   myReview: UserReview | null;
@@ -53,9 +54,9 @@ export function useReviews({ loadPublic = true }: UseReviewsOptions = {}): UseRe
   const [myReviewLoading, setMyReviewLoading] = useState<boolean>(false);
 
   // Fetch approved reviews for public carousel
-  const refreshPublicReviews = useCallback(async () => {
+  const refreshPublicReviews = useCallback(async (silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       setError(null);
       const data = await fetchPublicReviews();
       if (data && data.success) {
@@ -63,9 +64,9 @@ export function useReviews({ loadPublic = true }: UseReviewsOptions = {}): UseRe
         setStats(data.stats || DEFAULT_STATS);
       }
     } catch (err: any) {
-      setError(err.message || 'Không thể tải danh sách đánh giá.');
+      if (!silent) setError(err.message || 'Không thể tải danh sách đánh giá.');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -97,6 +98,12 @@ export function useReviews({ loadPublic = true }: UseReviewsOptions = {}): UseRe
       refreshPublicReviews();
     }
   }, [loadPublic, refreshPublicReviews]);
+
+  useLiveRefresh(
+    () => refreshPublicReviews(true),
+    10_000,
+    loadPublic
+  );
 
   useEffect(() => {
     refreshMyReview();

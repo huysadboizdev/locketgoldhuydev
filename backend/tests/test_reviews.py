@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import Mock, patch
 
 # Configure temporary paths before importing app
 temp_db_fd, temp_db_path = tempfile.mkstemp(suffix=".db")
@@ -16,6 +17,7 @@ temp_creator_storage_dir = tempfile.mkdtemp(prefix="test_creators_storage_")
 os.environ["LOCKET_DB"] = temp_db_path
 os.environ["REVIEW_STORAGE_ROOT"] = temp_storage_dir
 os.environ["CREATOR_STORAGE_ROOT"] = temp_creator_storage_dir
+os.environ["REVIEW_STORAGE_PROVIDER"] = "local"
 os.environ["FLASK_SECRET_KEY"] = "test-secret-key-review-1234567890"
 os.environ["JWT_SECRET"] = "test-jwt-secret-review-key-12345678"
 os.environ["REFRESH_TOKEN_PEPPER"] = "test-pepper-review-secure-12345"
@@ -71,6 +73,18 @@ def create_image_with_exif():
     exif[0x0110] = "TestCameraModel"
     buf = io.BytesIO()
     img.save(buf, format="JPEG", exif=exif)
+    buf.seek(0)
+    return buf
+
+
+def create_heic_image_bytes():
+    """Generate an iPhone-compatible HEIC image in memory."""
+    import pillow_heif
+
+    image = Image.new("RGB", (160, 120), color=(245, 170, 40))
+    heif = pillow_heif.from_pillow(image)
+    buf = io.BytesIO()
+    heif.save(buf, quality=80)
     buf.seek(0)
     return buf
 
@@ -441,6 +455,77 @@ class ReviewsComprehensiveTestCase(unittest.TestCase):
         with Image.open(file_path) as disk_img:
             self.assertEqual(disk_img.format, "WEBP")
 
+    def test_review_upload_uses_cloudinary_and_public_route_redirects(self):
+        uploader = Mock()
+        uploader.upload.return_value = {
+            "resource_type": "image",
+            "secure_url": "https://res.cloudinary.com/test-cloud/image/upload/review.webp",
+            "bytes": 321,
+        }
+        original_config = {
+            key: self.app.config.get(key)
+            for key in (
+                "REVIEW_STORAGE_PROVIDER",
+                "CLOUDINARY_CLOUD_NAME",
+                "CLOUDINARY_API_KEY",
+                "CLOUDINARY_API_SECRET",
+                "CLOUDINARY_FOLDER",
+            )
+        }
+        self.app.config.update(
+            REVIEW_STORAGE_PROVIDER="cloudinary",
+            CLOUDINARY_CLOUD_NAME="test-cloud",
+            CLOUDINARY_API_KEY="test-key",
+            CLOUDINARY_API_SECRET="test-secret",
+            CLOUDINARY_FOLDER="locket-gold/reviews",
+        )
+        try:
+            csrf = self._get_csrf_token()
+            with patch("locket.image_storage._configure_cloudinary", return_value=uploader):
+                response = self.client.post(
+                    "/api/reviews",
+                    headers={
+                        "Authorization": f"Bearer {self.token_user1}",
+                        "X-CSRF-Token": csrf,
+                    },
+                    content_type="multipart/form-data",
+                    data={
+                        "rating": "5",
+                        "content": "Cloudinary upload integration test",
+                        "images": [(create_test_image_bytes(), "mobile-photo.jpg")],
+                    },
+                )
+                self.assertEqual(response.status_code, 201)
+                image = db.get_review_by_user_id(self.user1_id)["images"][0]
+                self.assertTrue(image["storage_name"].startswith("cld_"))
+                self.assertFalse(os.path.exists(os.path.join(temp_storage_dir, image["storage_name"])))
+
+                public_response = self.client.get(f"/api/reviews/images/{image['storage_name']}")
+                self.assertEqual(public_response.status_code, 302)
+                self.assertIn("res.cloudinary.com/test-cloud", public_response.headers["Location"])
+        finally:
+            self.app.config.update(original_config)
+
+    def test_iphone_heic_upload_is_converted_to_safe_derivative(self):
+        csrf = self._get_csrf_token()
+        response = self.client.post(
+            "/api/reviews",
+            headers={
+                "Authorization": f"Bearer {self.token_user1}",
+                "X-CSRF-Token": csrf,
+            },
+            content_type="multipart/form-data",
+            data={
+                "rating": "5",
+                "content": "HEIC upload integration test",
+                "images": [(create_heic_image_bytes(), "iphone-photo.heic")],
+            },
+        )
+        self.assertEqual(response.status_code, 201)
+        image = db.get_review_by_user_id(self.user1_id)["images"][0]
+        self.assertIn(image["mime_type"], {"image/webp", "image/jpeg"})
+        self.assertTrue(os.path.exists(os.path.join(temp_storage_dir, image["storage_name"])))
+
     # 6. Corrupt / Non-Image Rejection
     def test_corrupt_image_rejection(self):
         csrf = self._get_csrf_token()
@@ -597,6 +682,7 @@ class ReviewsComprehensiveTestCase(unittest.TestCase):
         # Empty state
         res_empty = self.client.get("/api/reviews")
         self.assertEqual(res_empty.status_code, 200)
+        self.assertIn("no-store", res_empty.headers.get("Cache-Control", ""))
         data_empty = res_empty.get_json()
         self.assertEqual(data_empty["reviews"], [])
         self.assertEqual(data_empty["stats"]["total"], 0)
@@ -613,6 +699,7 @@ class ReviewsComprehensiveTestCase(unittest.TestCase):
 
         res = self.client.get("/api/reviews")
         self.assertEqual(res.status_code, 200)
+        self.assertIn("no-store", res.headers.get("Cache-Control", ""))
         data = res.get_json()
 
         # Only approved review appears
@@ -665,10 +752,10 @@ class ReviewsComprehensiveTestCase(unittest.TestCase):
         self.assertEqual(res_del.status_code, 200)
         self.assertIsNone(db.get_review_by_id(r_id))
 
-    # 14. Image Size Limit (Max 3MB per file)
-    def test_image_size_limit_3mb(self):
+    # 14. Image Size Limit (Max 8MB per file)
+    def test_image_size_limit_8mb(self):
         csrf = self._get_csrf_token()
-        huge_bytes = io.BytesIO(b"X" * (3 * 1024 * 1024 + 10))
+        huge_bytes = io.BytesIO(b"X" * (8 * 1024 * 1024 + 10))
         res = self.client.post(
             "/api/reviews",
             headers={"Authorization": f"Bearer {self.token_user1}", "X-CSRF-Token": csrf},
@@ -680,7 +767,7 @@ class ReviewsComprehensiveTestCase(unittest.TestCase):
             },
         )
         self.assertEqual(res.status_code, 400)
-        self.assertIn("3MB", res.get_json()["msg"])
+        self.assertIn("8MB", res.get_json()["msg"])
         res.close()
 
     # 15. Decompression Bomb DoS Prevention

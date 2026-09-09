@@ -572,6 +572,7 @@ def admin_review_set_status(review_id):
 @bp.route("/api/reviews/<int:review_id>", methods=["DELETE"])
 @admin_required
 def admin_review_delete(review_id):
+    from ..image_storage import delete_stored_image
     from ..reviews import get_storage_root, invalidate_reviews_cache
     storage_root = get_storage_root()
     storage_names = db.delete_review(review_id)
@@ -579,10 +580,7 @@ def admin_review_delete(review_id):
         return jsonify({"success": False, "error": "not_found", "msg": "Không tìm thấy đánh giá cần xóa."}), 404
 
     for name in storage_names:
-        try:
-            os.remove(os.path.join(storage_root, name))
-        except OSError:
-            pass
+        delete_stored_image(name, storage_root, "review")
 
     invalidate_reviews_cache()
     return jsonify({"success": True, "msg": "Đã xóa đánh giá thành công."})
@@ -591,7 +589,8 @@ def admin_review_delete(review_id):
 @bp.route("/api/reviews/images/<storage_name>", methods=["GET"])
 @admin_required
 def admin_review_image(storage_name):
-    from flask import abort, send_file
+    from flask import abort
+    from ..image_storage import serve_stored_image
     from ..reviews import SAFE_FILENAME_REGEX, get_storage_root
 
     if not SAFE_FILENAME_REGEX.match(storage_name):
@@ -602,14 +601,14 @@ def admin_review_image(storage_name):
     if not img_row:
         abort(404)
 
-    storage_root = get_storage_root()
-    file_path = os.path.join(storage_root, storage_name)
-    if not os.path.exists(file_path):
+    resp = serve_stored_image(
+        storage_name,
+        get_storage_root(),
+        "review",
+        "private, no-store",
+    )
+    if resp is None:
         abort(404)
-
-    resp = send_file(file_path, mimetype="image/webp")
-    resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers["Cache-Control"] = "private, no-store"
     return resp
 
 

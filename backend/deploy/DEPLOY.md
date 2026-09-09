@@ -90,6 +90,22 @@ ACCESS_TOKEN_TTL_SECONDS=600
 REFRESH_TOKEN_TTL_SECONDS=2592000
 REFRESH_COOKIE_NAME=locket_refresh
 
+# VietQR + SePay automatic settlement
+VIETQR_BANK_ID=TPB
+VIETQR_ACCOUNT_NO=<bank_alias_or_account_used_to_generate_qr>
+VIETQR_ACCOUNT_NAME=<bank_account_holder_name>
+VIETQR_TEMPLATE=compact2
+# Exact accountNumber returned in SePay's webhook payload. If SePay can return
+# more than one identifier, separate them with commas.
+SEPAY_WEBHOOK_ACCOUNT_NUMBERS=<real_numeric_account_returned_by_sepay>
+PAYMENT_TRANSFER_PREFIX=LOCKETGOLDHUYDEV
+PAYMENT_TRANSFER_DIGITS=3
+PAYMENT_TTL_SECONDS=600
+PAYMENT_CODE_REUSE_DELAY_SECONDS=86400
+PAYMENT_WEBHOOK_ENABLED=1
+SEPAY_WEBHOOK_SECRET=<same_hmac_secret_configured_in_sepay>
+SEPAY_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS=300
+
 # Locket Accounts (optional seed)
 EMAIL=
 PASSWORD=
@@ -97,12 +113,26 @@ gist_token_url=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 
-# Review System & X-Accel-Redirect
-REVIEW_STORAGE_ROOT=/var/lib/locket-gold/reviews
-CREATOR_STORAGE_ROOT=/var/lib/locket-gold/creators
-ENABLE_ACCEL_REDIRECT=1
+# Review/KOL images on Cloudinary (credentials stay backend-only)
+REVIEW_STORAGE_PROVIDER=cloudinary
+CLOUDINARY_CLOUD_NAME=<cloud_name>
+CLOUDINARY_API_KEY=<api_key>
+CLOUDINARY_API_SECRET=<api_secret>
+CLOUDINARY_FOLDER=locket-gold/reviews
+CLOUDINARY_CREATOR_FOLDER=locket-gold/creators
+ENABLE_ACCEL_REDIRECT=0
+
+# Local-storage alternative only:
+# REVIEW_STORAGE_PROVIDER=local
+# REVIEW_STORAGE_ROOT=/var/lib/locket-gold/reviews
+# CREATOR_STORAGE_ROOT=/var/lib/locket-gold/creators
+# ENABLE_ACCEL_REDIRECT=1
 
 ```
+
+Configure SePay to send HMAC-SHA256 webhooks directly to
+`https://locketgoldhuy.io.vn/api/payment/webhook`. Do not use the `http://`
+URL and do not put any SePay or bank secret in the frontend environment.
 
 > **Cách sinh khoá bí mật an toàn trên terminal:**
 > `openssl rand -hex 32` (chạy riêng cho `FLASK_SECRET_KEY`, `JWT_SECRET`, và `REFRESH_TOKEN_PEPPER`)
