@@ -12,7 +12,7 @@ interface AuthenticatedReviewImageProps {
 async function fetchImage(src: string, token: string | null): Promise<Response> {
   return fetch(src, {
     method: 'GET',
-    credentials: 'include',
+    credentials: 'same-origin',
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   });
 }

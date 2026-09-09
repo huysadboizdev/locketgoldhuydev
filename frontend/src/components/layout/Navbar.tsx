@@ -73,9 +73,9 @@ export const Navbar: React.FC<NavbarProps> = ({ isBackendOffline }) => {
 
   return (
     <header className="gold-nav sticky top-0 z-40 w-full border-b backdrop-blur-md transition-colors">
-      <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
+      <div className="mx-auto flex h-16 max-w-[1600px] items-center justify-between gap-3 px-3 sm:px-5 lg:px-8">
         {/* Brand Logo */}
-        <Link to="/" className="flex items-center gap-2.5 transition-opacity hover:opacity-90">
+        <Link to="/" className="flex shrink-0 items-center gap-2.5 transition-opacity hover:opacity-90">
           <img
             src="/logo-locket.png"
             alt=""
@@ -91,31 +91,33 @@ export const Navbar: React.FC<NavbarProps> = ({ isBackendOffline }) => {
         </Link>
 
         {/* Desktop Nav Links */}
-        {/* Desktop Nav Links */}
-        <nav className="hidden xl:flex items-center gap-1 text-xs font-semibold text-zinc-600 dark:text-zinc-300" aria-label="Menu chính">
-          <Link to="/" className="px-3 py-2 rounded-lg hover:text-zinc-900 dark:hover:text-white transition-colors">
+        <nav className="hidden shrink-0 items-center gap-0.5 whitespace-nowrap text-xs font-semibold text-zinc-600 dark:text-zinc-300 2xl:flex" aria-label="Menu chính">
+          <Link to="/" className="rounded-lg px-2.5 py-2 transition-colors hover:text-zinc-900 dark:hover:text-white">
             Trang chủ
           </Link>
-          <a href="/#features" onClick={handleScrollSection('features')} className="px-3 py-2 rounded-lg hover:text-zinc-900 dark:hover:text-white transition-colors">
+          <a href="/#features" onClick={handleScrollSection('features')} className="rounded-lg px-2.5 py-2 transition-colors hover:text-zinc-900 dark:hover:text-white">
             Tính năng
           </a>
-          <a href="/#creators" onClick={handleScrollSection('creators')} className="px-3 py-2 rounded-lg hover:text-zinc-900 dark:hover:text-white transition-colors">
+          <a href="/#creators" onClick={handleScrollSection('creators')} className="rounded-lg px-2.5 py-2 transition-colors hover:text-zinc-900 dark:hover:text-white">
             TikToker/KOL
           </a>
-          <a href="/#process" onClick={handleScrollSection('process')} className="px-3 py-2 rounded-lg hover:text-zinc-900 dark:hover:text-white transition-colors">
+          <a href="/#process" onClick={handleScrollSection('process')} className="rounded-lg px-2.5 py-2 transition-colors hover:text-zinc-900 dark:hover:text-white">
             Quy trình
           </a>
-          <Link to={isAuthenticated ? '/dashboard' : '/login?returnTo=/dashboard'} className="px-3 py-2 rounded-lg hover:text-zinc-900 dark:hover:text-white transition-colors">
+          <a href="/#support" onClick={handleScrollSection('support')} className="mx-0.5 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-amber-700 transition-colors hover:border-amber-500/50 hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 dark:text-amber-300">
+            Hỗ trợ
+          </a>
+          <Link to={isAuthenticated ? '/dashboard' : '/login?returnTo=/dashboard'} className="rounded-lg px-2.5 py-2 transition-colors hover:text-zinc-900 dark:hover:text-white">
             Gói dịch vụ
           </Link>
-          <Link to="/track" className="px-3 py-2 rounded-lg text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors flex items-center gap-1">
+          <Link to="/track" className="flex items-center gap-1 rounded-lg px-2.5 py-2 text-zinc-500 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white">
             <span>Tra cứu</span>
-            <span className="text-[9px] px-1 py-0.2 rounded bg-zinc-200/60 dark:bg-zinc-800 text-zinc-500 font-normal">Sắp ra mắt</span>
+            <span className="h-1.5 w-1.5 rounded-full bg-zinc-300 dark:bg-zinc-600" aria-label="Sắp ra mắt" title="Sắp ra mắt" />
           </Link>
         </nav>
 
         {/* Global status & actions */}
-        <div className="flex items-center gap-2 sm:gap-3">
+        <div className="flex shrink-0 items-center gap-2 sm:gap-3">
           {/* Server status pill */}
           <div className={`hidden lg:flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors ${
             currentStatus === 'offline'
@@ -204,7 +206,7 @@ export const Navbar: React.FC<NavbarProps> = ({ isBackendOffline }) => {
             aria-expanded={isMenuOpen}
             aria-controls="mobile-navigation"
             aria-label={isMenuOpen ? 'Đóng menu' : 'Mở menu'}
-            className="xl:hidden flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/80 text-zinc-700 dark:text-zinc-200 focus-visible:ring-2 focus-visible:ring-amber-500"
+            className="flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-200 bg-white text-zinc-700 focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-zinc-800 dark:bg-zinc-900/80 dark:text-zinc-200 2xl:hidden"
           >
             {isMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </button>
@@ -215,7 +217,7 @@ export const Navbar: React.FC<NavbarProps> = ({ isBackendOffline }) => {
       {isMenuOpen && (
         <div
           id="mobile-navigation"
-          className="gold-nav xl:hidden border-t px-4 py-5 shadow-xl backdrop-blur-md animate-in slide-in-from-top-2 duration-150"
+          className="gold-nav border-t px-4 py-5 shadow-xl backdrop-blur-md animate-in slide-in-from-top-2 duration-150 2xl:hidden"
         >
           <div className="flex flex-col space-y-3">
             {/* User card if logged in */}
@@ -307,6 +309,14 @@ export const Navbar: React.FC<NavbarProps> = ({ isBackendOffline }) => {
               className="flex items-center justify-between py-2 text-sm font-medium text-zinc-800 dark:text-zinc-200 border-b border-zinc-100 dark:border-zinc-800/60"
             >
               <span>TikToker/KOL</span>
+            </a>
+
+            <a
+              href="/#support"
+              onClick={handleScrollSection('support')}
+              className="flex items-center justify-between py-2 text-sm font-medium text-zinc-800 dark:text-zinc-200 border-b border-zinc-100 dark:border-zinc-800/60"
+            >
+              <span>Hỗ trợ</span>
             </a>
 
             <Link

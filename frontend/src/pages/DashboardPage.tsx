@@ -17,6 +17,7 @@ import { OrdersView } from './dashboard/OrdersView';
 import { FeedbackView } from './dashboard/FeedbackView';
 import { ThemeToggle } from '../components/layout/ThemeToggle';
 import { PostServiceReviewPrompt } from '../components/reviews/PostServiceReviewPrompt';
+import { SupportLauncher } from '../components/support/SupportLauncher';
 import { useReviews } from '../hooks/useReviews';
 import { useToast } from '../hooks/useToast';
 import { useOverlay } from '../context/OverlayContext';
@@ -498,6 +499,8 @@ export const DashboardPage: React.FC = () => {
         onUpdate={reviewState.updateReview}
         onDelete={reviewState.deleteReview}
       />
+
+      <SupportLauncher />
 
       {/* Mobile Bottom Navigation Bar */}
       <nav
