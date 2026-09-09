@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import urllib.parse
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from werkzeug.security import generate_password_hash
 
@@ -795,6 +796,147 @@ class VietQRPaymentSystemTestCase(unittest.TestCase):
         self.assertEqual(payment["status"], "paid")
         self.assertEqual(payment["bank_transaction_id"], "SEPAY_9000005")
         self.assertEqual(activation["status"], "completed")
+
+    def test_37_delayed_sepay_webhook_recovers_on_time_expired_topup_once(self):
+        balance_before = db.get_wallet_balance(101)
+        create_res = self.client.post(
+            "/api/payments/topup",
+            headers=self.headers_user1,
+            json={"amount_vnd": 20000, "idempotency_key": "sepay-delayed-topup"},
+        )
+        self.assertEqual(create_res.status_code, 200)
+        created = create_res.get_json()
+
+        now = time.time()
+        created_at = now - 900
+        expires_at = now - 300
+        paid_at_bank = now - 450
+        conn = db.get_conn()
+        conn.execute(
+            "UPDATE payment_orders SET status='expired', created_at=?, expires_at=?, updated_at=? WHERE id=?",
+            (created_at, expires_at, now, created["payment_id"]),
+        )
+        conn.commit()
+
+        payload = {
+            "id": 9000006,
+            "gateway": "TPBank",
+            "transactionDate": datetime.fromtimestamp(
+                paid_at_bank, timezone(timedelta(hours=7))
+            ).strftime("%Y-%m-%d %H:%M:%S"),
+            "accountNumber": "0123456789",
+            "code": created["transfer_code"],
+            "content": created["transfer_code"],
+            "transferType": "in",
+            "transferAmount": 20000,
+            "referenceCode": "SEPAY_DELAYED_TOPUP_1",
+        }
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        headers = self._sepay_headers(body)
+
+        first = self.client.post("/api/payment/webhook", data=body, headers=headers)
+        replay = self.client.post("/api/payment/webhook", data=body, headers=headers)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(db.get_wallet_balance(101), balance_before + 20)
+        payment = db.get_payment_order_by_id(created["payment_id"])
+        self.assertEqual(payment["status"], "paid")
+        self.assertEqual(payment["bank_transaction_id"], "SEPAY_9000006")
+
+    def test_38_delayed_sepay_webhook_recovers_expired_plan_purchase(self):
+        create_res = self.client.post(
+            "/api/payments/plan",
+            headers=self.headers_user1,
+            json={
+                "plan_id": self.plan_id,
+                "platform": "ios",
+                "username": "sepay_delayed_plan_user",
+                "idempotency_key": "sepay-delayed-plan",
+            },
+        )
+        self.assertEqual(create_res.status_code, 200)
+        created = create_res.get_json()
+
+        now = time.time()
+        created_at = now - 900
+        expires_at = now - 300
+        paid_at_bank = now - 450
+        conn = db.get_conn()
+        conn.execute(
+            "UPDATE payment_orders SET status='expired', created_at=?, expires_at=?, updated_at=? WHERE id=?",
+            (created_at, expires_at, now, created["payment_id"]),
+        )
+        conn.execute(
+            "UPDATE activation_orders SET status='cancelled', updated_at=? WHERE id=?",
+            (now, created["activation_order_id"]),
+        )
+        conn.commit()
+
+        payload = {
+            "id": 9000007,
+            "gateway": "TPBank",
+            "transactionDate": datetime.fromtimestamp(
+                paid_at_bank, timezone(timedelta(hours=7))
+            ).strftime("%Y-%m-%d %H:%M:%S"),
+            "accountNumber": "0123456789",
+            "code": created["transfer_code"],
+            "content": created["transfer_code"],
+            "transferType": "in",
+            "transferAmount": created["amount_vnd"],
+            "referenceCode": "SEPAY_DELAYED_PLAN_1",
+        }
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        with patch("locket.notifications.notify_paid_order") as notify_order:
+            response = self.client.post(
+                "/api/payment/webhook", data=body, headers=self._sepay_headers(body)
+            )
+            self.assertEqual(response.status_code, 200)
+            notify_order.assert_called_once()
+
+        payment = db.get_payment_order_by_id(created["payment_id"])
+        activation = db.get_activation_order_by_id(created["activation_order_id"])
+        self.assertEqual(payment["status"], "paid")
+        self.assertNotEqual(activation["status"], "cancelled")
+
+    def test_39_payment_made_after_expiry_is_not_auto_recovered(self):
+        balance_before = db.get_wallet_balance(101)
+        create_res = self.client.post(
+            "/api/payments/topup",
+            headers=self.headers_user1,
+            json={"amount_vnd": 20000, "idempotency_key": "sepay-too-late-topup"},
+        )
+        self.assertEqual(create_res.status_code, 200)
+        created = create_res.get_json()
+
+        now = time.time()
+        conn = db.get_conn()
+        conn.execute(
+            "UPDATE payment_orders SET status='expired', created_at=?, expires_at=?, updated_at=? WHERE id=?",
+            (now - 1800, now - 1200, now, created["payment_id"]),
+        )
+        conn.commit()
+        payload = {
+            "id": 9000008,
+            "gateway": "TPBank",
+            "transactionDate": datetime.fromtimestamp(
+                now, timezone(timedelta(hours=7))
+            ).strftime("%Y-%m-%d %H:%M:%S"),
+            "accountNumber": "0123456789",
+            "code": created["transfer_code"],
+            "content": created["transfer_code"],
+            "transferType": "in",
+            "transferAmount": 20000,
+            "referenceCode": "SEPAY_TOO_LATE_TOPUP_1",
+        }
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        response = self.client.post(
+            "/api/payment/webhook", data=body, headers=self._sepay_headers(body)
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(db.get_wallet_balance(101), balance_before)
+        self.assertEqual(
+            db.get_payment_order_by_id(created["payment_id"])["status"], "expired"
+        )
 
 if __name__ == "__main__":
     unittest.main()

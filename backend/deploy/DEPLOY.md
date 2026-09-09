@@ -105,6 +105,7 @@ PAYMENT_CODE_REUSE_DELAY_SECONDS=86400
 PAYMENT_WEBHOOK_ENABLED=1
 SEPAY_WEBHOOK_SECRET=<same_hmac_secret_configured_in_sepay>
 SEPAY_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS=300
+SEPAY_TRANSACTION_CLOCK_SKEW_SECONDS=300
 
 # Locket Accounts (optional seed)
 EMAIL=
@@ -129,6 +130,16 @@ ENABLE_ACCEL_REDIRECT=0
 # ENABLE_ACCEL_REDIRECT=1
 
 ```
+
+Cloudinary API key requirements:
+
+- Prefer the product-environment root API key for this private backend. A
+  restricted key must be assigned permission to create/upload assets in both
+  `locket-gold/reviews` and `locket-gold/creators`.
+- Grant delete/destroy permission as well so deleting a review or KOL removes
+  its remote asset. Do not expose the API secret to Vite or the browser.
+- An Admin API `ping` only validates credentials and read access; deployment
+  acceptance must include one real upload followed by deletion.
 
 Configure SePay to send HMAC-SHA256 webhooks directly to
 `https://locketgoldhuy.io.vn/api/payment/webhook`. Do not use the `http://`

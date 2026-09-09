@@ -265,7 +265,8 @@ def dispatch_paid_activation_order(order_id, app=None):
 
 
 def confirm_payment(payment_id_or_ref, bank_transaction_id=None, current_app_instance=None,
-                    audit_context=None, manual_override=False, manual_reason=None):
+                    audit_context=None, manual_override=False, manual_reason=None,
+                    recover_expired=False):
     """Shared payment confirmation service.
     Can be called by Admin manual confirmation route or future webhook listeners.
     Verifies pending status, checks expiry, performs atomic wallet topup or activation enqueue.
@@ -290,6 +291,7 @@ def confirm_payment(payment_id_or_ref, bank_transaction_id=None, current_app_ins
         audit_context=audit_context,
         manual_override=manual_override,
         manual_reason=manual_reason,
+        recover_expired=recover_expired,
     )
     if status != "ok":
         return (status, res)

@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 from flask import Flask
 
 from locket.image_storage import (
+    ImageStorageConfigurationError,
     ImageStorageUploadError,
     cloudinary_delivery_url,
     delete_stored_image,
@@ -92,6 +93,23 @@ class ImageStorageTestCase(unittest.TestCase):
         uploader.upload.side_effect = TimeoutError("upstream timeout")
         with patch("locket.image_storage._configure_cloudinary", return_value=uploader):
             with self.assertRaisesRegex(ImageStorageUploadError, "Cloudinary"):
+                save_processed_image(b"safe-webp", self.root, "webp", "review")
+
+    def test_cloudinary_create_permission_failure_is_configuration_error(self):
+        self.app.config.update(
+            REVIEW_STORAGE_PROVIDER="cloudinary",
+            CLOUDINARY_CLOUD_NAME="demo-cloud",
+            CLOUDINARY_API_KEY="restricted-key",
+            CLOUDINARY_API_SECRET="test-secret",
+            CLOUDINARY_FOLDER="locket-gold/reviews",
+        )
+        uploader = Mock()
+        uploader.upload.side_effect = RuntimeError(
+            'Request forbidden due to missing permissions (actions=["create"])'
+        )
+
+        with patch("locket.image_storage._configure_cloudinary", return_value=uploader):
+            with self.assertRaisesRegex(ImageStorageConfigurationError, "quyền tạo tệp"):
                 save_processed_image(b"safe-webp", self.root, "webp", "review")
 
 

@@ -30,6 +30,48 @@ class ImageStorageUploadError(RuntimeError):
     """Raised when a processed derivative cannot be persisted remotely."""
 
 
+def _raise_cloudinary_upload_error(exc: Exception) -> None:
+    """Translate Cloudinary failures without leaking credentials to clients.
+
+    A successful Admin API ``ping`` does not prove that a restricted API key
+    may create assets.  Cloudinary reports that case as ``NotAllowed`` with an
+    ``actions=[\"create\"]`` hint.  Treat it as configuration, not as a bad
+    customer image or a transient network failure.
+    """
+    exception_name = type(exc).__name__.lower()
+    detail = str(exc).lower()
+    permission_denied = (
+        exception_name == "notallowed"
+        or "missing permissions" in detail
+        or "actions=[\"create\"]" in detail
+        or "actions=['create']" in detail
+    )
+    if permission_denied:
+        raise ImageStorageConfigurationError(
+            "Kho ảnh Cloudinary chưa cấp quyền tạo tệp cho máy chủ. "
+            "Vui lòng liên hệ quản trị viên."
+        ) from exc
+
+    authentication_failed = any(
+        marker in detail
+        for marker in (
+            "invalid api key",
+            "unknown api key",
+            "invalid signature",
+            "must supply api_key",
+        )
+    )
+    if authentication_failed:
+        raise ImageStorageConfigurationError(
+            "Thông tin xác thực kho ảnh Cloudinary không hợp lệ. "
+            "Vui lòng liên hệ quản trị viên."
+        ) from exc
+
+    raise ImageStorageUploadError(
+        "Không thể tải ảnh lên Cloudinary lúc này. Vui lòng thử lại sau."
+    ) from exc
+
+
 def storage_provider() -> str:
     provider = str(
         current_app.config.get("REVIEW_STORAGE_PROVIDER")
@@ -138,9 +180,7 @@ def save_processed_image(
             )
         except Exception as exc:
             logger.exception("Cloudinary upload failed for %s image", asset_kind)
-            raise ImageStorageUploadError(
-                "Không thể tải ảnh lên Cloudinary lúc này. Vui lòng thử lại sau."
-            ) from exc
+            _raise_cloudinary_upload_error(exc)
         if not result or result.get("resource_type") != "image" or not result.get("secure_url"):
             raise ImageStorageUploadError(
                 "Cloudinary không trả về tệp ảnh hợp lệ. Vui lòng thử lại sau."

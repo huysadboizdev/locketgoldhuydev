@@ -10,6 +10,7 @@ import hmac
 import os
 import re
 import time
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, current_app, jsonify, request
 
@@ -20,6 +21,8 @@ sepay_webhook_bp = Blueprint("sepay_webhook", __name__, url_prefix="/api/payment
 
 MAX_WEBHOOK_BODY_BYTES = 64 * 1024
 DEFAULT_TIMESTAMP_TOLERANCE_SECONDS = 300
+DEFAULT_BANK_CLOCK_SKEW_SECONDS = 300
+VIETNAM_TIMEZONE = timezone(timedelta(hours=7))
 
 
 def _error(error: str, message: str, status: int):
@@ -40,6 +43,46 @@ def _timestamp_tolerance() -> int:
     except (TypeError, ValueError):
         return DEFAULT_TIMESTAMP_TOLERANCE_SECONDS
     return max(30, min(value, 900))
+
+
+def _bank_clock_skew() -> int:
+    raw = os.getenv(
+        "SEPAY_TRANSACTION_CLOCK_SKEW_SECONDS",
+        str(DEFAULT_BANK_CLOCK_SKEW_SECONDS),
+    ).strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_BANK_CLOCK_SKEW_SECONDS
+    return max(0, min(value, 900))
+
+
+def _parse_bank_transaction_time(value) -> float | None:
+    """Parse SePay's bank-local transaction time without trusting server receipt time."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=VIETNAM_TIMEZONE)
+    return parsed.timestamp()
+
+
+def _paid_within_order_window(payload: dict, payment: dict) -> bool:
+    """Allow delayed delivery only when the bank says payment happened on time."""
+    transaction_time = _parse_bank_transaction_time(payload.get("transactionDate"))
+    if transaction_time is None:
+        return False
+    try:
+        created_at = float(payment["created_at"])
+        expires_at = float(payment["expires_at"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    skew = _bank_clock_skew()
+    return created_at - skew <= transaction_time <= expires_at + skew
 
 
 def verify_sepay_hmac(raw_body: bytes, timestamp: str, signature: str) -> tuple[bool, str]:
@@ -181,10 +224,12 @@ def _process_payment(payload: dict):
         )
         return _acknowledge()
 
+    recover_expired = _paid_within_order_window(payload, payment)
     status, result = payment_service.confirm_payment(
         payment_id_or_ref=payment["id"],
         bank_transaction_id=bank_transaction_id,
         current_app_instance=current_app._get_current_object(),
+        recover_expired=recover_expired,
     )
     if status in {"ok", "already_paid", "expired", "not_found"}:
         if status == "ok":

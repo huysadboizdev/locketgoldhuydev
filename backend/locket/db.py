@@ -2428,7 +2428,8 @@ def list_payment_orders_admin(status=None, query=None, limit=50, offset=0, retur
 
 
 def confirm_payment_order_tx(payment_id, bank_transaction_id, audit_context=None,
-                             manual_override=False, manual_reason=None):
+                             manual_override=False, manual_reason=None,
+                             recover_expired=False):
     """Atomically confirm payment order with bank_transaction_id.
     If wallet_topup: credits coin with topup ledger.
     If plan_purchase: marks payment paid and sets activation_order status to 'paid'.
@@ -2464,11 +2465,13 @@ def confirm_payment_order_tx(payment_id, bank_transaction_id, audit_context=None
             conn.execute("ROLLBACK")
             return ("already_paid", "Đơn thanh toán này đã được xác nhận trước đó.")
 
-        if row["status"] == "expired" and not manual_override:
+        can_recover_expired = bool(manual_override or recover_expired)
+
+        if row["status"] == "expired" and not can_recover_expired:
             conn.execute("ROLLBACK")
             return ("expired", "Mã thanh toán đã hết hạn, không thể xác nhận.")
 
-        if row["status"] == "pending" and row["expires_at"] < now and not manual_override:
+        if row["status"] == "pending" and row["expires_at"] < now and not can_recover_expired:
             conn.execute(
                 "UPDATE payment_orders SET status = 'expired', updated_at = ? WHERE id = ?",
                 (now, payment_id),
@@ -2483,6 +2486,8 @@ def confirm_payment_order_tx(payment_id, bank_transaction_id, audit_context=None
         allowed_statuses = {"pending"}
         if manual_override:
             allowed_statuses.update({"expired", "underpaid", "review_needed"})
+        elif recover_expired:
+            allowed_statuses.add("expired")
         if row["status"] not in allowed_statuses:
             conn.execute("ROLLBACK")
             return ("error", f"Không thể xác nhận đơn ở trạng thái '{row['status']}'.")
@@ -2542,7 +2547,7 @@ def confirm_payment_order_tx(payment_id, bank_transaction_id, audit_context=None
                 (payment_id,),
             ).fetchone()
             recoverable_activation_statuses = {"awaiting_payment"}
-            if manual_override and row["status"] == "expired":
+            if can_recover_expired and row["status"] == "expired":
                 recoverable_activation_statuses.add("cancelled")
             if act_row and act_row["status"] in recoverable_activation_statuses:
                 next_status = (
@@ -2563,7 +2568,7 @@ def confirm_payment_order_tx(payment_id, bank_transaction_id, audit_context=None
             payment_id,
             act_id_for_coupon,
             now,
-            allow_released=manual_override,
+            allow_released=can_recover_expired,
         )
 
         updated_row = conn.execute(
