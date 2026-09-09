@@ -12,7 +12,6 @@ import {
   Settings,
   History,
   ShieldCheck,
-  Sparkles,
   ExternalLink,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -111,12 +110,15 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
     <aside className="flex h-full flex-col bg-zinc-950 border-r border-zinc-800/80 w-64 select-none">
       {/* Brand Header */}
       <div className="flex items-center gap-3 px-6 py-5 border-b border-zinc-800/80">
-        <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-amber-400 to-amber-600 text-zinc-950 shadow-lg shadow-amber-500/20 font-black">
-          <Sparkles className="h-5 w-5 fill-current" />
-        </div>
+        <img
+          src="/logo-locket.png"
+          alt=""
+          aria-hidden="true"
+          className="h-11 w-11 shrink-0 object-contain drop-shadow-[0_5px_12px_rgba(244,114,182,0.32)]"
+        />
         <div>
           <div className="flex items-center gap-1.5">
-            <span className="font-extrabold text-sm tracking-tight text-white">Locket Gold</span>
+            <span className="font-extrabold text-sm tracking-tight text-white">Locket Gold - Huy Dev</span>
             <span className="rounded-md bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 text-[10px] font-bold text-amber-400 uppercase">
               Admin
             </span>

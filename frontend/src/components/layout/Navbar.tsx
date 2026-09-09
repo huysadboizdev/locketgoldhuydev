@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Sparkles, Menu, X, Loader2, LogOut, LayoutDashboard } from 'lucide-react';
+import { Menu, X, Loader2, LogOut, LayoutDashboard } from 'lucide-react';
 import { fetchGlobalQueueStatus } from '../../api/endpoints';
 import type { GlobalQueueStatusResponse } from '../../types/api';
 import { ThemeToggle } from './ThemeToggle';
@@ -76,20 +76,23 @@ export const Navbar: React.FC<NavbarProps> = ({ isBackendOffline }) => {
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
         {/* Brand Logo */}
         <Link to="/" className="flex items-center gap-2.5 transition-opacity hover:opacity-90">
-          <div className="gold-icon flex h-9 w-9 items-center justify-center rounded-xl border text-zinc-800 dark:text-zinc-100">
-            <Sparkles className="h-5 w-5 text-amber-500 dark:text-amber-400" />
-          </div>
+          <img
+            src="/logo-locket.png"
+            alt=""
+            aria-hidden="true"
+            className="h-10 w-10 shrink-0 object-contain drop-shadow-[0_5px_10px_rgba(244,114,182,0.28)]"
+          />
           <div className="flex flex-col">
-            <span className="text-sm sm:text-base font-bold tracking-tight text-zinc-900 dark:text-white flex items-center gap-1.5">
-              Locket Gold <span className="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700">VIP</span>
+            <span className="text-xs sm:text-sm font-extrabold tracking-tight text-zinc-900 dark:text-white whitespace-nowrap">
+              Locket Gold - Huy Dev
             </span>
-            <span className="text-[10px] sm:text-[11px] text-zinc-500 dark:text-zinc-400 font-medium">Huy Dev Edition</span>
+            <span className="text-[10px] sm:text-[11px] text-zinc-500 dark:text-zinc-400 font-medium">Official</span>
           </div>
         </Link>
 
         {/* Desktop Nav Links */}
         {/* Desktop Nav Links */}
-        <nav className="hidden md:flex items-center gap-1 text-xs font-semibold text-zinc-600 dark:text-zinc-300" aria-label="Menu chính">
+        <nav className="hidden xl:flex items-center gap-1 text-xs font-semibold text-zinc-600 dark:text-zinc-300" aria-label="Menu chính">
           <Link to="/" className="px-3 py-2 rounded-lg hover:text-zinc-900 dark:hover:text-white transition-colors">
             Trang chủ
           </Link>
@@ -201,7 +204,7 @@ export const Navbar: React.FC<NavbarProps> = ({ isBackendOffline }) => {
             aria-expanded={isMenuOpen}
             aria-controls="mobile-navigation"
             aria-label={isMenuOpen ? 'Đóng menu' : 'Mở menu'}
-            className="md:hidden flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/80 text-zinc-700 dark:text-zinc-200 focus-visible:ring-2 focus-visible:ring-amber-500"
+            className="xl:hidden flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/80 text-zinc-700 dark:text-zinc-200 focus-visible:ring-2 focus-visible:ring-amber-500"
           >
             {isMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </button>
@@ -212,7 +215,7 @@ export const Navbar: React.FC<NavbarProps> = ({ isBackendOffline }) => {
       {isMenuOpen && (
         <div
           id="mobile-navigation"
-          className="gold-nav md:hidden border-t px-4 py-5 shadow-xl backdrop-blur-md animate-in slide-in-from-top-2 duration-150"
+          className="gold-nav xl:hidden border-t px-4 py-5 shadow-xl backdrop-blur-md animate-in slide-in-from-top-2 duration-150"
         >
           <div className="flex flex-col space-y-3">
             {/* User card if logged in */}

@@ -9,7 +9,7 @@ export const Footer: React.FC = () => {
           {/* Col 1: About */}
           <div className="space-y-3">
             <span className="text-sm font-semibold tracking-wide text-zinc-900 dark:text-zinc-100">
-              Locket Gold Huy Dev
+              Locket Gold - Huy Dev
             </span>
             <p className="text-xs leading-relaxed text-zinc-600 dark:text-zinc-400">
               Nền tảng hỗ trợ kích hoạt và hướng dẫn cấu hình Locket Gold tự động, đơn giản và an toàn cho người dùng iOS và Android.
@@ -38,7 +38,7 @@ export const Footer: React.FC = () => {
         </div>
 
         <div className="mt-8 border-t border-zinc-200 dark:border-zinc-800/80 pt-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-zinc-500 dark:text-zinc-400">
-          <p>© {new Date().getFullYear()} Locket Gold Huy Dev. Mọi quyền được bảo lưu.</p>
+          <p>© {new Date().getFullYear()} Locket Gold - Huy Dev. Mọi quyền được bảo lưu.</p>
           <div className="flex items-center gap-4 text-zinc-500 dark:text-zinc-400">
             <span>Bảo mật</span>
             <span>•</span>

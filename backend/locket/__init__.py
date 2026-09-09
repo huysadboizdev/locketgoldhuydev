@@ -31,6 +31,7 @@ from .public import bp as public_bp
 from .user_auth import auth_bp
 from .reviews import reviews_bp
 from .creators import creators_bp
+from .sepay_webhook import sepay_webhook_bp
 from .queue_manager import QueueManager
 from .rotator import AccountRotator
 
@@ -75,6 +76,7 @@ def create_app():
     app.register_blueprint(auth_bp)
     app.register_blueprint(reviews_bp)
     app.register_blueprint(creators_bp)
+    app.register_blueprint(sepay_webhook_bp)
 
     return app
 

@@ -17,7 +17,6 @@ import { OrdersView } from './dashboard/OrdersView';
 import { FeedbackView } from './dashboard/FeedbackView';
 import { ThemeToggle } from '../components/layout/ThemeToggle';
 import {
-  Sparkles,
   LayoutDashboard,
   Zap,
   Coins,
@@ -135,12 +134,15 @@ export const DashboardPage: React.FC = () => {
               onClick={() => handleTabChange('overview')}
               className="flex min-w-0 items-center gap-2 sm:gap-2.5 transition-opacity hover:opacity-90"
             >
-              <div className="gold-icon flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-xl border text-zinc-800 dark:text-zinc-100">
-                <Sparkles className="h-5 w-5 text-amber-500 dark:text-amber-400" />
-              </div>
+              <img
+                src="/logo-locket.png"
+                alt=""
+                aria-hidden="true"
+                className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 object-contain drop-shadow-[0_5px_10px_rgba(244,114,182,0.25)]"
+              />
               <div className="flex flex-col">
-                <span className="text-xs sm:text-sm font-bold tracking-tight text-zinc-900 dark:text-white flex items-center gap-1 sm:gap-1.5 whitespace-nowrap">
-                  Locket Gold <span className="text-[10px] font-semibold px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-700 dark:text-amber-300">VIP</span>
+                <span className="text-[11px] sm:text-sm font-extrabold tracking-tight text-zinc-900 dark:text-white whitespace-nowrap">
+                  Locket Gold - Huy Dev
                 </span>
                 <span className="hidden sm:block text-[10px] text-zinc-500 dark:text-zinc-400">Dashboard</span>
               </div>
