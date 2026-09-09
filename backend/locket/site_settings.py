@@ -455,7 +455,7 @@ def get_public_dns_config():
     profile = raw_profile if _SAFE_PROFILE_RE.match(raw_profile) else _DEFAULT_DNS_PROFILE
     quoted_profile = urllib.parse.quote(profile)
     hostname = f"{profile}.dns.nextdns.io"
-    apple_url = f"https://apple.nextdns.io/{quoted_profile}"
+    apple_url = f"https://apple.nextdns.io/?configuration={quoted_profile}"
     doh_url = f"https://dns.nextdns.io/{quoted_profile}"
 
     return {

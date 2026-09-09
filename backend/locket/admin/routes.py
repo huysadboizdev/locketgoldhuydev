@@ -397,8 +397,10 @@ MOBILECONFIG_HISTORY_LIMIT = 20
 
 
 def _mobileconfig_path():
-    static_dir = os.path.join(current_app.root_path, "static")
-    return os.path.join(static_dir, "locket.mobileconfig")
+    env_path = (os.getenv("MOBILECONFIG_PATH") or "").strip()
+    if env_path:
+        return env_path
+    return "/var/lib/locket-gold/downloads/locket.mobileconfig"
 
 
 def _record_mobileconfig_history(action, filename=None, size=None, signed=None):
@@ -479,6 +481,7 @@ def mobileconfig_upload():
     with open(tmp, "wb") as out:
         out.write(blob)
     os.replace(tmp, target)
+    os.chmod(target, 0o640)
     st = os.stat(target)
     signed = blob[:1] == b"\x30"
     _record_mobileconfig_history(
