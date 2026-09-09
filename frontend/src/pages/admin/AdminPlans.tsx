@@ -56,7 +56,6 @@ export const AdminPlans: React.FC = () => {
   const [shortDescription, setShortDescription] = useState('');
   const [durationDays, setDurationDays] = useState<number>(30);
   const [priceVnd, setPriceVnd] = useState<number>(50000);
-  const [priceCoin, setPriceCoin] = useState<number>(50);
   const [productId, setProductId] = useState('');
   const [supportedPlatforms, setSupportedPlatforms] = useState<'all' | 'ios' | 'android'>('all');
   const [iosFulfillmentMode, setIosFulfillmentMode] = useState<'auto_activation' | 'manual_contact' | 'disabled'>('auto_activation');
@@ -65,6 +64,7 @@ export const AdminPlans: React.FC = () => {
   const [isPopular, setIsPopular] = useState(false);
   const [isActive, setIsActive] = useState(true);
   const [sortOrder, setSortOrder] = useState<number>(0);
+  const priceCoin = Math.floor(priceVnd / 1000);
 
   // Delete modal
   const [deletingPlan, setDeletingPlan] = useState<AdminPlanItem | null>(null);
@@ -103,7 +103,6 @@ export const AdminPlans: React.FC = () => {
     setShortDescription('');
     setDurationDays(30);
     setPriceVnd(50000);
-    setPriceCoin(50);
     setProductId('');
     setSupportedPlatforms('all');
     setIosFulfillmentMode('auto_activation');
@@ -123,7 +122,6 @@ export const AdminPlans: React.FC = () => {
     setShortDescription(plan.short_description || '');
     setDurationDays(plan.duration_days);
     setPriceVnd(plan.price_vnd);
-    setPriceCoin(plan.price_coin);
     setProductId(plan.product_id || '');
     setSupportedPlatforms(plan.supported_platforms);
     setIosFulfillmentMode(plan.ios_fulfillment_mode || (plan.supported_platforms === 'android' ? 'disabled' : 'auto_activation'));
@@ -146,12 +144,8 @@ export const AdminPlans: React.FC = () => {
       setFormError('Vui lòng nhập mã định danh (slug).');
       return;
     }
-    if (priceVnd % 1000 !== 0) {
+    if (priceVnd <= 0 || priceVnd % 1000 !== 0) {
       setFormError('Giá tiền VND phải chia hết cho 1.000đ.');
-      return;
-    }
-    if (priceCoin < 0) {
-      setFormError('Giá Coin không được âm.');
       return;
     }
 
@@ -383,7 +377,7 @@ export const AdminPlans: React.FC = () => {
         >
           <form onSubmit={handleSavePlan} className="space-y-4 text-xs">
             {formError && (
-              <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-rose-300 flex items-center gap-2">
+              <div role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-rose-300 flex items-center gap-2">
                 <AlertCircle className="h-4 w-4 shrink-0 text-rose-400" />
                 <span>{formError}</span>
               </div>
@@ -391,9 +385,11 @@ export const AdminPlans: React.FC = () => {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-zinc-300 font-semibold mb-1">Tên gói *</label>
+                <label htmlFor="admin-plan-name" className="block text-zinc-300 font-semibold mb-1">Tên gói *</label>
                 <input
+                  id="admin-plan-name"
                   type="text"
+                  data-autofocus="true"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Ví dụ: Gói 1 Tháng VIP"
@@ -403,8 +399,9 @@ export const AdminPlans: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-zinc-300 font-semibold mb-1">Mã Slug *</label>
+                <label htmlFor="admin-plan-slug" className="block text-zinc-300 font-semibold mb-1">Mã Slug *</label>
                 <input
+                  id="admin-plan-slug"
                   type="text"
                   value={slug}
                   onChange={(e) => setSlug(e.target.value)}
@@ -415,10 +412,11 @@ export const AdminPlans: React.FC = () => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div>
-                <label className="block text-zinc-300 font-semibold mb-1">Thời hạn (ngày) *</label>
+                <label htmlFor="admin-plan-duration" className="block text-zinc-300 font-semibold mb-1">Thời hạn (ngày) *</label>
                 <input
+                  id="admin-plan-duration"
                   type="number"
                   min="1"
                   value={durationDays}
@@ -429,8 +427,9 @@ export const AdminPlans: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-zinc-300 font-semibold mb-1">Giá VND (chia hết 1000) *</label>
+                <label htmlFor="admin-plan-price-vnd" className="block text-zinc-300 font-semibold mb-1">Giá VND (chia hết 1000) *</label>
                 <input
+                  id="admin-plan-price-vnd"
                   type="text"
                   inputMode="numeric"
                   pattern="[0-9.]*"
@@ -442,23 +441,23 @@ export const AdminPlans: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-zinc-300 font-semibold mb-1">Giá Coin *</label>
+                <label htmlFor="admin-plan-price-coin" className="block text-zinc-300 font-semibold mb-1">Giá Coin *</label>
                 <input
+                  id="admin-plan-price-coin"
                   type="text"
-                  inputMode="numeric"
-                  pattern="[0-9.]*"
+                  readOnly
                   value={formatGroupedInteger(priceCoin)}
-                  onChange={(e) => setPriceCoin(parseGroupedInteger(e.target.value))}
-                  required
-                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
+                  title="Tự động tính theo tỷ lệ 1 Coin = 1.000 VND"
+                  className="w-full cursor-not-allowed rounded-xl border border-zinc-800 bg-zinc-900 px-3.5 py-2.5 text-zinc-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
                 />
               </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-zinc-300 font-semibold mb-1">Nền tảng hỗ trợ</label>
+                <label htmlFor="admin-plan-platforms" className="block text-zinc-300 font-semibold mb-1">Nền tảng hỗ trợ</label>
                 <select
+                  id="admin-plan-platforms"
                   value={supportedPlatforms}
                   onChange={(e) => {
                     const next = e.target.value as 'all' | 'ios' | 'android';
@@ -483,8 +482,9 @@ export const AdminPlans: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-zinc-300 font-semibold mb-1">Thứ tự hiển thị (Sort Order)</label>
+                <label htmlFor="admin-plan-sort-order" className="block text-zinc-300 font-semibold mb-1">Thứ tự hiển thị (Sort Order)</label>
                 <input
+                  id="admin-plan-sort-order"
                   type="number"
                   value={sortOrder}
                   onChange={(e) => setSortOrder(parseInt(e.target.value, 10) || 0)}
@@ -495,8 +495,9 @@ export const AdminPlans: React.FC = () => {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-xl border border-zinc-800 bg-zinc-950/40 p-3">
               <div>
-                <label className="block text-zinc-300 font-semibold mb-1">Luồng xử lý iOS</label>
+                <label htmlFor="admin-plan-ios-mode" className="block text-zinc-300 font-semibold mb-1">Luồng xử lý iOS</label>
                 <select
+                  id="admin-plan-ios-mode"
                   value={iosFulfillmentMode}
                   disabled={supportedPlatforms === 'android'}
                   onChange={(e) => setIosFulfillmentMode(e.target.value as typeof iosFulfillmentMode)}
@@ -508,8 +509,9 @@ export const AdminPlans: React.FC = () => {
                 </select>
               </div>
               <div>
-                <label className="block text-zinc-300 font-semibold mb-1">Luồng xử lý Android</label>
+                <label htmlFor="admin-plan-android-mode" className="block text-zinc-300 font-semibold mb-1">Luồng xử lý Android</label>
                 <select
+                  id="admin-plan-android-mode"
                   value={androidFulfillmentMode}
                   disabled={supportedPlatforms === 'ios'}
                   onChange={(e) => setAndroidFulfillmentMode(e.target.value as typeof androidFulfillmentMode)}
@@ -526,10 +528,11 @@ export const AdminPlans: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-zinc-300 font-semibold mb-1">
+              <label htmlFor="admin-plan-features" className="block text-zinc-300 font-semibold mb-1">
                 Danh sách tính năng (Mỗi dòng một tính năng)
               </label>
               <textarea
+                id="admin-plan-features"
                 value={featuresText}
                 onChange={(e) => setFeaturesText(e.target.value)}
                 placeholder="Tính năng 1&#10;Tính năng 2&#10;Tính năng 3"
@@ -560,7 +563,7 @@ export const AdminPlans: React.FC = () => {
               </label>
             </div>
 
-            <div className="flex justify-end gap-2.5 pt-3 border-t border-zinc-800">
+            <div className="sticky bottom-0 z-10 -mx-1 flex justify-end gap-2.5 border-t border-zinc-800 bg-zinc-900/95 px-1 pb-1 pt-3 backdrop-blur">
               <button
                 type="button"
                 onClick={() => setIsModalOpen(false)}

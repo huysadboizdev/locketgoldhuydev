@@ -32,6 +32,7 @@ export const Modal: React.FC<ModalProps> = ({
       isOpen={isOpen}
       onClose={onClose}
       ariaLabelledBy={titleId}
+      overlayClassName="admin-shell"
       backdropClassName="bg-zinc-950/55 backdrop-blur-sm dark:bg-black/70"
       className={`${maxWidthClass} !rounded-3xl !border !border-zinc-200 !bg-white/98 !text-zinc-900 shadow-2xl backdrop-blur-md dark:!border-zinc-800 dark:!bg-zinc-900/95 dark:!text-zinc-100`}
     >

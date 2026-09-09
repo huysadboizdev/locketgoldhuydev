@@ -20,6 +20,9 @@ backend/storage/
 queue_state.json
 accounts.json
 tokens.json
+backend/account_pool_credentials.txt
+backend/token_cache_export.json
+backend/token_cache_payload.txt
 
 # Local editor and OS metadata.
 .vscode/

@@ -454,20 +454,28 @@ class QueueManager:
     def _finalize(self, client_id, slot_id, status, result=None, error=None):
         now = time.time()
         conn = db.get_conn()
-        conn.execute("BEGIN")
+        act_id = None
+
         try:
+            conn.execute("BEGIN")
+
             row = conn.execute(
-                "SELECT username, started_at, activation_order_id FROM queue_requests WHERE client_id = ?",
+                "SELECT username, started_at, activation_order_id "
+                "FROM queue_requests WHERE client_id = ?",
                 (client_id,),
             ).fetchone()
+
             if row is None:
-                conn.execute("ROLLBACK")
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
                 return
 
             act_id = row["activation_order_id"]
             duration = (now - row["started_at"]) if row["started_at"] else None
+
             conn.execute(
-                "UPDATE queue_requests SET status=?, result=?, error=?, completed_at=? "
+                "UPDATE queue_requests "
+                "SET status=?, result=?, error=?, completed_at=? "
                 "WHERE client_id=?",
                 (
                     status,
@@ -478,18 +486,10 @@ class QueueManager:
                 ),
             )
 
-            if act_id:
-                try:
-                    if status == "completed":
-                        db.update_activation_order_status(act_id, "completed", queue_client_id=client_id)
-                    elif status == "error":
-                        db.update_activation_order_status(act_id, "failed", queue_client_id=client_id)
-                except Exception as e:
-                    print(f"Failed to update activation order {act_id} status on finalize: {e}")
-
             if duration is not None:
                 conn.execute(
-                    "INSERT INTO processing_times (duration, completed_at) VALUES (?,?)",
+                    "INSERT INTO processing_times (duration, completed_at) "
+                    "VALUES (?,?)",
                     (duration, now),
                 )
                 conn.execute(
@@ -502,7 +502,15 @@ class QueueManager:
                 "INSERT INTO recent_log "
                 "(client_id, username, slot_id, status, error, duration, completed_at) "
                 "VALUES (?,?,?,?,?,?,?)",
-                (client_id, row["username"], slot_id, status, error, duration, now),
+                (
+                    client_id,
+                    row["username"],
+                    slot_id,
+                    status,
+                    error,
+                    duration,
+                    now,
+                ),
             )
             conn.execute(
                 "DELETE FROM recent_log WHERE id NOT IN "
@@ -511,9 +519,43 @@ class QueueManager:
             )
 
             conn.execute("COMMIT")
+
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
+
+        # update_activation_order_status() manages its own SQLite transaction.
+        # Keep it outside the queue transaction so the thread-local connection
+        # cannot accidentally commit/rollback _finalize()'s transaction.
+        if act_id:
+            try:
+                transition_result = None
+
+                if status == "completed":
+                    transition_result = db.update_activation_order_status(
+                        act_id,
+                        "completed",
+                        queue_client_id=client_id,
+                    )
+                elif status == "error":
+                    transition_result = db.update_activation_order_status(
+                        act_id,
+                        "failed",
+                        queue_client_id=client_id,
+                    )
+
+                if transition_result and transition_result[0] != "ok":
+                    print(
+                        f"Failed to update activation order {act_id} "
+                        f"status on finalize: {transition_result}"
+                    )
+
+            except Exception as e:
+                print(
+                    f"Failed to update activation order {act_id} "
+                    f"status on finalize: {e}"
+                )
 
     def _maybe_cleanup(self):
         now = time.monotonic()
