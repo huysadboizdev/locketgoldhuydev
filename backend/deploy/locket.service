@@ -1,0 +1,53 @@
+[Unit]
+Description=Locket Gold API Service (Flask + Gunicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=locket
+Group=locket
+UMask=0077
+WorkingDirectory=/opt/locket-gold/backend
+
+# Reads runtime environment variables: JWT_SECRET, REFRESH_TOKEN_PEPPER, BEHIND_HTTPS=1, etc.
+EnvironmentFile=/etc/locket-gold.env
+Environment=PYTHONUNBUFFERED=1
+Environment=LOCKET_DB=/var/lib/locket-gold/locket.db
+Environment=MOBILECONFIG_PATH=/var/lib/locket-gold/downloads/locket.mobileconfig
+Environment=ANDROID_APK_PATH=/var/lib/locket-gold/downloads/Locket_v1.200.0-gocmod.com.apk
+Environment=ENABLE_ACCEL_REDIRECT=1
+
+ExecStart=/opt/locket-gold/backend/.venv/bin/gunicorn \
+    --config /opt/locket-gold/backend/gunicorn.conf.py \
+    wsgi:app
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Memory sizing for 2GB RAM VPS
+MemoryHigh=512M
+MemoryMax=768M
+
+# Security Hardening - source tree is strictly read-only
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/locket-gold /run/locket-gold
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+# Logs to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=locket
+
+[Install]
+WantedBy=multi-user.target

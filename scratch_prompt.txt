@@ -1,0 +1,953 @@
+<USER_REQUEST>
+Bạn đang làm việc tại dự án:
+
+D:\toolvip\locketgold\Locket_Gold_Huy_Dev
+
+Hãy triển khai hoàn chỉnh, xuyên suốt và có kiểm thử cho hai hạng mục được gộp chung:
+
+1. Sửa triệt để logic chọn nền tảng iOS/Android.
+2. Tách Landing Page khỏi Dashboard và xây dựng hệ thống gói dịch vụ, ví Coin, thanh toán Coin/QR do Admin quản lý.
+
+Chỉ tập trung vào các hạng mục được mô tả bên dưới. Không chỉnh sửa lan man reviews, showcase, authentication core hoặc những phần không liên quan, trừ khi cần thay đổi route/redirect để kết nối Dashboard.
+
+==================================================
+A. YÊU CẦU BẮT BUỘC VỀ SKILL AI
+==================================================
+
+Trước khi sửa code:
+
+1. Kiểm tra toàn bộ skill AI đang có trong môi trường.
+2. Đọc đầy đủ SKILL.md của tất cả skill phù hợp, ưu tiên:
+   - Frontend/UI/UX.
+   - React/TypeScript.
+   - Flask/API.
+   - SQLite/database migration.
+   - Payment/security.
+   - Accessibility.
+   - Testing/debugging.
+3. Vận dụng thực tế các skill phù hợp.
+4. Không được tuyên bố đã sử dụng skill nếu chưa đọc và làm theo SKILL.md.
+5. Không sử dụng skill không liên quan chỉ để đủ số lượng.
+6. Trong báo cáo cuối, ghi rõ skill nào đã dùng và áp dụng vào phần nào.
+
+Trước khi triển khai:
+
+- Kiểm tra code hiện tại.
+- Viết kế hoạch triển khai ngắn theo từng phase.
+- Sau đó thực hiện code, không chỉ dừng ở việc viết kế hoạch.
+- Giữ nguyên các thay đổi hợp lệ đang có của người dùng.
+
+==================================================
+B. HIỆN TRẠNG VÀ NGUYÊN NHÂN
+==================================================
+
+Hiện tại:
+
+- `/` đang vừa là Landing Page vừa chứa `UpgradePortal`.
+- Chưa có `/dashboard`.
+- Sau đăng nhập/đăng ký đang quay về `/#upgrade`.
+- Frontend chưa có catalog gói thật.
+- Backend hiện xử lý một product cố định.
+- Admin chưa có hệ thống CRUD gói dịch vụ.
+- Chưa có ví Coin và sổ cái giao dịch.
+- Chưa có payment order thực.
+- `UpgradePortal.tsx` có state `platform`, nhưng `/api/restore` chỉ nhận username.
+- Platform không được lưu trong database/queue/session.
+- `QueueModal.tsx` tự mặc định `guideTab = 'ios'`.
+- Vì vậy người chọn Android vẫn có thể nhìn thấy iOS.
+- DNS NextDNS đang bị hardcode tại một số vị trí.
+- Download ticket chưa gắn chặt với đơn hàng và loại thiết bị.
+
+Hãy xử lý nguyên nhân gốc, không chỉ ẩn tab bằng CSS.
+
+==================================================
+C. KIẾN TRÚC TRẢI NGHIỆM MỚI
+==================================================
+
+Luồng mong muốn:
+
+Landing Page
+    |
+    |-- Chưa đăng nhập --> Login/Register --> Dashboard
+    |
+    |-- Đã đăng nhập ----------------------> Dashboard
+                                                |
+                                                |-- Chọn gói
+                                                |-- Chọn thiết bị
+                                                |-- Nhập Locket username
+                                                |-- Chọn thanh toán
+                                                |-- Theo dõi thanh toán
+                                                |-- Theo dõi kích hoạt
+                                                |-- Nhận hướng dẫn đúng thiết bị
+
+Landing Page chỉ có nhiệm vụ:
+
+- Giới thiệu sản phẩm.
+- Showcase tính năng.
+- Reviews.
+- FAQ.
+- CTA đăng nhập/đăng ký/mở Dashboard.
+
+Không để form kích hoạt trực tiếp trên Landing Page nữa.
+
+CTA:
+
+- Chưa đăng nhập: `/login?returnTo=/dashboard`
+- Đã đăng nhập: `/dashboard`
+
+Login/Register thành công phải chuyển đến `/dashboard`.
+
+==================================================
+D. PROTECTED DASHBOARD
+==================================================
+
+Tạo route `/dashboard` có bảo vệ authentication:
+
+- Khi AuthContext đang bootstrap: hiển thị skeleton/loading, không redirect sớm.
+- Chưa đăng nhập: chuyển tới `/login?returnTo=/dashboard`.
+- Đã đăng nhập: hiển thị Dashboard.
+- Người đã đăng nhập truy cập `/login` hoặc `/register` thì chuyển về Dashboard.
+- Không để xuất hiện chớp nội dung protected trước khi redirect.
+
+Dashboard layout:
+
+Desktop:
+- Sidebar nhỏ bên trái.
+- Nội dung chính bên phải.
+
+Mobile:
+- Header gọn.
+- Bottom navigation có safe-area.
+- Không ép sidebar desktop xuống màn hình nhỏ.
+
+Menu:
+
+- Tổng quan.
+- Gói Locket Gold.
+- Ví Coin.
+- Đơn kích hoạt.
+- Lịch sử giao dịch.
+- Tài khoản.
+
+Dashboard header:
+
+- Avatar.
+- Lời chào theo display name.
+- Số dư Coin.
+- Trạng thái backend.
+- Đơn đang xử lý nếu có.
+- Nút “Kích hoạt gói mới”.
+
+==================================================
+E. PHONG CÁCH UI/UX
+==================================================
+
+Phong cách:
+
+- Professional nhưng cute.
+- Light theme: trắng kem, vàng Locket nhẹ, không dùng vàng quá chói.
+- Dark theme: than chì, vàng dịu.
+- Card bo góc 20–24px.
+- Shadow mềm.
+- Icon đơn sắc từ lucide-react.
+- Giữ thiết kế sạch, ít nhiễu và tập trung chuyển đổi.
+
+Animation sử dụng `motion/react` đang có:
+
+- Page transition fade + slide 200–300ms.
+- Card gói được chọn nâng khoảng 2px và scale tối đa 1.01.
+- Viền vàng xuất hiện bằng spring nhẹ.
+- Wizard đổi bước bằng AnimatePresence có hướng.
+- Skeleton khi tải dữ liệu.
+- Số dư Coin chuyển số nhẹ khi cập nhật.
+- QR xuất hiện bằng fade + scale.
+- Check animation khi thanh toán/kích hoạt thành công.
+- Confetti nhỏ, chỉ dùng một lần khi hoàn tất.
+- Tôn trọng `prefers-reduced-motion`.
+- Không dùng hiệu ứng liên tục gây mỏi mắt.
+- Không dùng animation nặng ảnh hưởng VPS hoặc thiết bị yếu.
+
+Accessibility:
+
+- Điều hướng được bằng bàn phím.
+- Focus ring rõ.
+- Button có label.
+- Dialog có `role="dialog"`, `aria-modal`, focus trap và trả focus khi đóng.
+- Không chỉ dùng màu để biểu thị trạng thái.
+- Contrast đạt mức dễ đọc.
+- Mobile touch target tối thiểu khoảng 44px.
+
+==================================================
+F. HỆ THỐNG GÓI DO ADMIN QUẢN LÝ
+==================================================
+
+Không được hardcode hoặc tạo mock packages trong frontend.
+
+Tạo bảng `plans` với migration idempotent:
+
+- id
+- name
+- slug
+- short_description
+- duration_days
+- price_vnd
+- product_id
+- features_json
+- supported_platforms
+- is_active
+- is_popular
+- sort_order
+- inventory_status
+- created_at
+- updated_at
+
+Quy tắc:
+
+- `price_vnd` là số nguyên.
+- Giá phải chia hết cho 1.000 VNĐ.
+- Giá Coin được backend tính:
+  `price_coin = price_vnd / 1000`
+- Không cho frontend tự quyết định giá Coin.
+- Không lưu tiền bằng float.
+- `product_id` bắt buộc đối với gói được bật bán.
+- `supported_platforms` chỉ nhận `ios`, `android` hoặc cả hai.
+- Gói không hợp lệ/không có inventory phải bị disabled.
+- API chỉ trả gói đang active và dữ liệu công khai an toàn.
+- Không trả token/payload/secret hoặc thông tin tài khoản worker.
+
+Admin phải có chức năng:
+
+- Thêm gói.
+- Sửa gói.
+- Ẩn/hiện.
+- Sắp xếp.
+- Đặt gói phổ biến.
+- Nhập giá VNĐ.
+- Nhập thời hạn.
+- Nhập product ID thật.
+- Chọn nền tảng hỗ trợ.
+- Quản lý danh sách quyền lợi.
+- Đặt trạng thái còn hàng/tạm hết.
+
+Sử dụng cơ chế admin auth và CSRF hiện có. Không tạo một hệ thống admin authentication mới.
+
+Nếu Admin chưa thêm gói, frontend phải hiện empty state:
+
+“Hiện chưa có gói Locket Gold khả dụng.”
+
+Không tự sinh gói demo hoặc fallback.
+
+==================================================
+G. THIẾT KẾ CARD GÓI
+==================================================
+
+Mỗi card gói lấy dữ liệu thật từ API và hiển thị:
+
+- Tên gói.
+- Mô tả ngắn.
+- Thời hạn.
+- Giá VNĐ.
+- Giá Coin.
+- Nền tảng hỗ trợ.
+- Danh sách quyền lợi thật.
+- Trạng thái còn hàng.
+- Nhãn “Được chọn nhiều” nếu Admin bật.
+- CTA “Chọn gói này”.
+
+Các quyền lợi chỉ được hiển thị nếu Admin cấu hình, ví dụ:
+
+- Quay Video Locket.
+- Hiển thị trạng thái Locket Gold.
+- Đổi biểu tượng ứng dụng.
+- Đổi giao diện Camera.
+
+Không ghi “Huy hiệu Locket Gold” như một tính năng thật. Huy hiệu nếu xuất hiện trong hình chỉ có tính minh họa.
+
+==================================================
+H. WIZARD KÍCH HOẠT
+==================================================
+
+Trong Dashboard, tạo wizard:
+
+1. Chọn gói.
+2. Chọn thiết bị.
+3. Nhập và xác minh tài khoản Locket.
+4. Chọn phương thức thanh toán.
+5. Kiểm tra và xác nhận.
+
+Stepper:
+
+Gói dịch vụ -- Thiết bị -- Tài khoản -- Thanh toán -- Xác nhận
+
+Quy tắc:
+
+- Không cho sang bước tiếp theo khi dữ liệu chưa hợp lệ.
+- Sau khi tạo order, khóa plan và platform.
+- Không được đổi thiết bị sau khi đã gửi đơn.
+- Tóm tắt cuối cùng phải hiển thị:
+  - Gói.
+  - Thời hạn.
+  - Username Locket.
+  - Platform.
+  - Giá VNĐ.
+  - Giá Coin.
+  - Phương thức thanh toán.
+
+==================================================
+I. SỬA TRIỆT ĐỂ PLATFORM IOS/ANDROID
+==================================================
+
+Tạo kiểu dùng chung:
+
+type DevicePlatform = 'ios' | 'android';
+
+Cập nhật toàn bộ:
+
+- Restore request/response.
+- Queue status.
+- Active queue.
+- Stored queue session.
+- Activation order.
+- Props UpgradePortal.
+- Props QueueModal.
+- useQueuePolling.
+
+Frontend phải gửi:
+
+{
+  username: string,
+  platform: 'ios' | 'android',
+  plan_id: number,
+  activation_order_id: number
+}
+
+Backend phải:
+
+- Dùng `request.get_json(silent=True)`.
+- Kiểm tra body là object.
+- Chuẩn hóa platform lowercase.
+- Chỉ nhận chính xác `ios` hoặc `android`.
+- Thiếu/sai platform trả HTTP 400 và error code rõ ràng.
+- Kiểm tra plan có hỗ trợ platform đó không.
+- Lưu platform vào database và queue.
+- Trả platform trong queue status và active queue.
+
+Migration `queue_requests`:
+
+- Thêm platform.
+- Thêm plan_id/activation_order_id nếu cần.
+- An toàn, idempotent, không xóa dữ liệu cũ.
+- Không tự gán mọi đơn cũ thành iOS.
+- Đơn legacy không xác định platform phải để NULL/unknown.
+
+Với đơn legacy không có platform:
+
+- Không mặc định iOS.
+- Không tự đoán Android.
+- Hiển thị thông báo minh bạch và yêu cầu tạo đơn mới hoặc chọn lại theo luồng an toàn.
+
+==================================================
+J. QUEUE POLLING VÀ SESSION RECOVERY
+==================================================
+
+Trong `useQueuePolling.ts`:
+
+- State phải có platform, plan ID và activation order ID.
+- `startQueue` bắt buộc nhận platform.
+- Lưu platform vào sessionStorage.
+- Validate dữ liệu khi đọc sessionStorage.
+- Khôi phục từ `/api/queue/my-active`.
+- Backend là nguồn dữ liệu chính.
+- Không để default iOS ghi đè Android.
+- Reset/logout phải xóa toàn bộ state.
+- Reload khi đang waiting/processing vẫn đúng gói và platform.
+
+==================================================
+K. QUEUE MODAL THEO ĐÚNG THIẾT BỊ
+==================================================
+
+Trong `QueueModal.tsx`:
+
+- Xóa hoàn toàn `guideTab`.
+- Xóa hai tab chuyển iOS/Android ở màn hình hoàn tất.
+- Nhận platform từ order/queue.
+- Hiển thị badge:
+  - “Thiết bị đã chọn: iPhone/iPad (iOS)”
+  - Hoặc “Thiết bị đã chọn: Android”
+
+Render:
+
+platform === 'ios'
+    chỉ render nội dung iOS
+
+platform === 'android'
+    chỉ render nội dung Android
+
+Không giữ cả hai nội dung trong DOM rồi dùng CSS ẩn.
+
+iOS không được hiện APK/Android guide.
+
+Android không được hiện Profile iOS/Safari/Apple URL.
+
+==================================================
+L. NEXTDNS CHO IOS VÀ ANDROID
+==================================================
+
+Xóa toàn bộ hardcode `a1e971` khỏi frontend và queue result.
+
+Backend tạo public config an toàn từ:
+
+NEXTDNS_PROFILE
+
+Có thể bổ sung vào API site settings/config:
+
+{
+  "nextdns_profile": "...",
+  "nextdns_hostname": "<profile>.dns.nextdns.io",
+  "nextdns_apple_url": "https://apple.nextdns.io/?profile=<profile>"
+}
+
+Yêu cầu:
+
+- Validate NEXTDNS_PROFILE bằng regex.
+- URL encode profile ID.
+- Tuyệt đối không trả NEXTDNS_KEY.
+- Không ghi NEXTDNS_KEY vào log.
+- Không đưa secret vào frontend/dist.
+- Nếu thiếu cấu hình, UI hiện “DNS chưa được cấu hình” và khóa nút liên quan.
+
+Nội dung iOS:
+
+- Tiêu đề: “Cài đặt DNS NextDNS cho iPhone/iPad”.
+- Ghi rõ hostname DNS.
+- Có nút sao chép hostname.
+- Có nút “Cài đặt Profile DNS NextDNS”.
+- Ghi rõ nên mở bằng Safari.
+- Hướng dẫn:
+  1. Mở bằng Safari và cho phép tải hồ sơ.
+  2. Vào Cài đặt → Đã tải về hồ sơ.
+  3. Chọn Cài đặt và xác nhận.
+  4. Tắt hoàn toàn Locket rồi mở lại.
+- Hiển thị Apple NextDNS URL dự phòng.
+- Cảnh báo không xóa Profile DNS nếu vẫn muốn sử dụng cấu hình này.
+
+Nội dung Android:
+
+- Tiêu đề: “Thiết lập cho Android”.
+- Hiển thị Private DNS hostname.
+- Nút sao chép.
+- Hướng dẫn:
+  Cài đặt → Mạng/Kết nối → DNS riêng tư → Tên máy chủ nhà cung cấp.
+- Nút tải APK Android.
+- Lưu ý cài APK và đăng nhập lại nếu cần.
+
+Không dùng `alert()` khi sao chép. Dùng trạng thái “Đã sao chép” hoặc toast nhẹ và xử lý Clipboard API thất bại.
+
+==================================================
+M. VÍ COIN
+==================================================
+
+Quy đổi cố định:
+
+1 Coin = 1.000 VNĐ
+
+Sử dụng đúng tên “Coin”, không dùng “coint”.
+
+Tạo bảng `wallets`:
+
+- user_id
+- balance_coin
+- updated_at
+
+Tạo bảng `wallet_transactions`:
+
+- id
+- user_id
+- type: topup, purchase, refund, adjustment
+- amount_coin
+- balance_before
+- balance_after
+- reference_type
+- reference_id
+- description
+- idempotency_key
+- created_at
+
+Quy tắc:
+
+- Không sửa số dư mà không tạo ledger.
+- Không dùng float.
+- Không cho số dư âm.
+- Idempotency key phải unique.
+- Admin điều chỉnh Coin cũng phải tạo transaction `adjustment`.
+- API số dư phải đọc dữ liệu thật.
+- Khi API loading, dùng skeleton.
+- Không hiển thị balance giả.
+
+==================================================
+N. TRANG NẠP COIN
+==================================================
+
+Trong `/dashboard/wallet`:
+
+Các nút chọn nhanh có thể tạo từ cấu hình backend:
+
+- 20 Coin.
+- 50 Coin.
+- 100 Coin.
+- 200 Coin.
+- Nhập số lượng khác.
+
+Không hardcode thành giao dịch thành công. Đây chỉ là lựa chọn số lượng.
+
+Hiển thị:
+
+Số Coin muốn nạp: 75 Coin
+Số tiền cần chuyển: 75.000 VNĐ
+
+Tạo QR thanh toán thật với:
+
+- Số tiền chính xác.
+- Nội dung chuyển khoản unique.
+- Mã payment order.
+- Thời hạn.
+- Trạng thái polling.
+
+Coin chỉ được cộng khi:
+
+- Webhook/cổng thanh toán xác nhận hợp lệ; hoặc
+- Admin đối soát và xác nhận thủ công.
+
+Không cộng Coin khi user bấm “Tôi đã chuyển khoản”.
+
+==================================================
+O. HAI PHƯƠNG THỨC THANH TOÁN GÓI
+==================================================
+
+Checkout có hai lựa chọn:
+
+1. Thanh toán bằng Coin.
+2. Thanh toán trực tiếp bằng QR.
+
+Thanh toán Coin:
+
+- Hiển thị số dư hiện tại.
+- Giá gói.
+- Số dư sau thanh toán.
+- Nếu thiếu Coin, hiển thị số Coin còn thiếu.
+- Có nút “Nạp ngay X Coin”.
+- Khi chuyển sang nạp Coin, tự điền đúng phần thiếu.
+
+Backend phải:
+
+- Đọc lại plan và giá từ database.
+- Không tin price/coin gửi từ frontend.
+- Trừ Coin bằng transaction an toàn.
+- Tạo ledger purchase.
+- Tạo activation order.
+- Không trừ Coin hai lần.
+- Nếu enqueue thất bại trước khi xử lý, phải hoàn Coin bằng ledger refund hoặc giữ trạng thái rõ ràng để retry.
+- Không để trạng thái tiền và order lệch nhau.
+
+Thanh toán QR trực tiếp:
+
+- Backend tạo payment order pending.
+- QR chứa đúng số tiền gói.
+- Nội dung chuyển khoản duy nhất.
+- Chỉ tạo activation order/queue sau khi payment được xác nhận.
+- Không dùng timer để giả lập thành công.
+
+Trạng thái UI:
+
+- Đang chờ thanh toán.
+- Đã nhận thanh toán.
+- Sai số tiền.
+- Cần đối soát.
+- Đã hết hạn.
+- Đã hủy.
+- Đã tạo yêu cầu kích hoạt.
+
+==================================================
+P. PAYMENT ORDER VÀ ACTIVATION ORDER
+==================================================
+
+Tạo bảng `payment_orders`:
+
+- id
+- payment_code
+- user_id
+- purpose: wallet_topup hoặc plan_purchase
+- plan_id nullable
+- amount_vnd
+- coin_amount
+- provider
+- status
+- qr_payload
+- bank_transaction_id
+- idempotency_key
+- expires_at
+- paid_at
+- created_at
+- updated_at
+
+Ràng buộc:
+
+- payment_code unique.
+- bank_transaction_id unique khi có.
+- idempotency_key unique.
+- amount_vnd là integer dương.
+- Một payment không được xử lý hai lần.
+
+Tạo bảng `activation_orders`:
+
+- id
+- user_id
+- plan_id
+- plan_name_snapshot
+- product_id_snapshot
+- duration_days_snapshot
+- price_vnd_snapshot
+- price_coin_snapshot
+- payment_method
+- payment_order_id
+- platform
+- locket_username
+- status
+- queue_client_id
+- created_at
+- updated_at
+
+Dùng snapshot để Admin đổi/xóa gói không làm thay đổi đơn cũ.
+
+Trạng thái activation order nên có state machine rõ ràng:
+
+- awaiting_payment
+- paid
+- awaiting_queue
+- queued
+- processing
+- completed
+- failed
+- refunded
+- cancelled
+
+Không cho chuyển trạng thái tùy ý.
+
+==================================================
+Q. VIETQR VÀ ĐỐI SOÁT
+==================================================
+
+Cấu hình ngân hàng phải nằm ở backend env, ví dụ:
+
+- VIETQR_BANK_ID
+- VIETQR_ACCOUNT_NO
+- VIETQR_ACCOUNT_NAME
+- VIETQR_TEMPLATE
+- PAYMENT_PROVIDER
+- PAYMENT_WEBHOOK_SECRET nếu nhà cung cấp hỗ trợ
+
+Cập nhật `.env.example` bằng placeholder, không ghi secret thật.
+
+Yêu cầu:
+
+- Frontend không được nhận credential ngân hàng nhạy cảm.
+- Không hardcode thông tin thanh toán trong component.
+- QR có nội dung chuyển khoản unique.
+- Polling payment có backoff hợp lý.
+- Không polling dày liên tục.
+- QR hết hạn phải dừng polling.
+- Không log secret/webhook payload nhạy cảm.
+
+Nếu chưa có nhà cung cấp webhook thật:
+
+- Implement luồng xác nhận thủ công qua Admin.
+- Payment giữ `pending` cho đến khi Admin xác nhận.
+- Admin phải nhập bank transaction reference.
+- Không tạo webhook giả.
+- Không tự đánh dấu paid.
+- UI ghi rõ “Đang chờ hệ thống/Admin xác nhận giao dịch”.
+
+Nếu có webhook:
+
+- Xác minh signature đúng tài liệu nhà cung cấp.
+- Dùng idempotency.
+- Kiểm tra payment code, số tiền và trạng thái.
+- Một bank transaction không được dùng cho nhiều payment.
+
+==================================================
+R. ADMIN QUẢN LÝ THANH TOÁN
+==================================================
+
+Trong Admin hiện có, thêm:
+
+- Danh sách payment pending.
+- Tìm theo payment code/user.
+- Xem số tiền dự kiến.
+- Xem thời gian tạo/hết hạn.
+- Xác nhận đã thanh toán.
+- Từ chối/sai số tiền.
+- Nhập bank transaction ID.
+- Xem lịch sử thay đổi.
+- Không cho xác nhận cùng payment hai lần.
+- Mọi action phải có admin auth, CSRF và audit log.
+
+Admin xác nhận:
+
+- `wallet_topup` → cộng Coin đúng một lần.
+- `plan_purchase` → chuyển order sang paid và enqueue đúng một lần.
+
+==================================================
+S. PRODUCT/INVENTORY VÀ WORKER
+==================================================
+
+Không được hiển thị nhiều gói nhưng backend vẫn xử lý ngẫu nhiên một product khác.
+
+Yêu cầu:
+
+- Plan phải map tới `product_id` thật.
+- Queue phải giữ product ID snapshot của activation order.
+- Worker phải nhận đúng product ID của đơn.
+- Chỉ sử dụng inventory/payload tương thích với product ID đó.
+- Nếu không có inventory tương thích, gói phải unavailable hoặc order chuyển trạng thái rõ ràng.
+- Không được âm thầm dùng product khác.
+- Khi xác minh kết quả, kiểm tra entitlement/product phản hồi phù hợp với gói đã chọn.
+- Không đưa token/payload/inventory secret ra API hoặc log.
+
+Không thay đổi hành vi tích hợp bên thứ ba ngoài phạm vi cần thiết để chọn đúng product đã được Admin cấu hình.
+
+==================================================
+T. DOWNLOAD TICKET THEO ĐÚNG ĐƠN
+==================================================
+
+Frontend phải gửi `activation_order_id` hoặc `client_id` khi yêu cầu tải.
+
+Backend kiểm tra:
+
+- User đã đăng nhập.
+- Order tồn tại.
+- Order thuộc đúng user.
+- Status completed.
+- Platform đúng.
+- Loại file đúng.
+
+Quy tắc:
+
+- Đơn iOS chỉ tạo mobileconfig ticket.
+- Đơn Android chỉ tạo APK ticket.
+- Đơn iOS yêu cầu APK → từ chối.
+- Đơn Android yêu cầu mobileconfig → từ chối.
+- User A không dùng order của user B.
+
+Mở rộng `download_tickets`:
+
+- ticket_hash
+- user_id
+- activation_order_id
+- artifact_type: mobileconfig hoặc apk
+- created_at
+- expires_at
+- claimed_at
+
+Khi claim:
+
+- `/api/mobileconfig` chỉ claim `artifact_type=mobileconfig`.
+- `/api/apk` chỉ claim `artifact_type=apk`.
+- Không thể dùng chéo ticket.
+- Ticket vẫn single-use.
+- Ticket hết hạn bị từ chối.
+
+==================================================
+U. API TỐI THIỂU
+==================================================
+
+Thiết kế endpoint theo convention hiện tại, tối thiểu gồm:
+
+Public/authenticated:
+
+- GET `/api/plans`
+- GET `/api/wallet`
+- GET `/api/wallet/transactions`
+- POST `/api/payments/topup`
+- POST `/api/payments/plan`
+- GET `/api/payments/<payment_code>`
+- POST `/api/orders/coin`
+- GET `/api/orders`
+- GET `/api/orders/<id>`
+- GET `/api/platform-config`
+
+Admin:
+
+- CRUD plans.
+- List/filter payments.
+- Confirm/reject/reconcile payment.
+- Wallet adjustment có audit log.
+
+Không đổi endpoint tùy tiện nếu dự án đã có convention tốt hơn; có thể điều chỉnh tên nhưng phải nhất quán.
+
+Mọi POST/PUT/PATCH/DELETE:
+
+- CSRF.
+- Authentication phù hợp.
+- Validate JSON/form.
+- Rate limit.
+- Error code ổn định.
+- Không lộ exception nội bộ.
+
+==================================================
+V. XỬ LÝ LỖI VÀ HOÀN TIỀN
+==================================================
+
+Trường hợp thanh toán Coin:
+
+- Nếu tạo order/enqueue thất bại trước khi xử lý: tạo ledger refund tự động hoặc trạng thái retry rõ ràng.
+- Không chỉ cộng balance trực tiếp.
+- Refund phải tham chiếu transaction/order gốc.
+- Không refund hai lần.
+
+Trường hợp QR đã thanh toán:
+
+- Nếu queue tạm đầy, chuyển `awaiting_queue`, không làm mất payment.
+- Có cơ chế retry enqueue an toàn.
+- Nếu kích hoạt thất bại, giữ trạng thái minh bạch.
+- Không tự ý giả lập completed.
+- Chính sách hoàn về Coin hoặc hoàn ngân hàng phải được thể hiện rõ; nếu chưa được quyết định, không tự động giả định hoàn ngân hàng.
+
+==================================================
+W. PERFORMANCE VPS 2 CORE / 2GB RAM / 30GB SSD
+==================================================
+
+- Frontend vẫn build static bằng Vite.
+- Lazy-load Dashboard và các trang lớn.
+- Không thêm thư viện UI nặng nếu CSS/Tailwind hiện tại làm được.
+- Animation chỉ dùng transform/opacity.
+- Pagination cho lịch sử.
+- Không tải toàn bộ giao dịch cùng lúc.
+- SQLite dùng transaction ngắn, WAL và index phù hợp.
+- Polling có backoff và dừng khi tab ẩn.
+- Không tạo worker/thread riêng cho từng user/payment.
+- Có cleanup payment/ticket hết hạn.
+- Không lưu QR base64 lớn trong database nếu không cần.
+
+==================================================
+X. MIGRATION
+==================================================
+
+Mọi migration phải:
+
+- Idempotent.
+- Chạy được trên `backend/locket.db` hiện tại.
+- Không xóa dữ liệu.
+- Không đổi tên database.
+- Không reset bảng.
+- Tạo index/check constraint phù hợp.
+- Chạy được nhiều lần.
+- Có test migration từ schema cũ.
+- Nếu SQLite không hỗ trợ thêm constraint trực tiếp, xử lý migration an toàn và ghi chú rõ.
+
+Không tự ý xóa hoặc thay thế file database thật trong lúc test. Test phải dùng database tạm.
+
+==================================================
+Y. TEST BẮT BUỘC
+==================================================
+
+Backend:
+
+1. Plans API không trả mock.
+2. Admin tạo/sửa/ẩn gói đúng.
+3. Giá Coin được tính theo 1 Coin = 1.000 VNĐ.
+4. Giá không chia hết 1.000 bị từ chối.
+5. Thiếu/sai platform bị từ chối.
+6. Platform được lưu đúng.
+7. Queue status trả đúng platform/plan.
+8. Active queue khôi phục đúng platform.
+9. User không xem order của người khác.
+10. Không thể mua gói inactive.
+11. Không thể mua gói không hỗ trợ platform.
+12. Coin không đủ bị từ chối.
+13. Thanh toán Coin trừ đúng một lần.
+14. Retry request không trừ Coin hai lần.
+15. Refund tạo ledger đúng một lần.
+16. Top-up pending không cộng Coin.
+17. Admin confirm top-up cộng Coin đúng một lần.
+18. Confirm lại không cộng lần hai.
+19. Sai số tiền không tự paid.
+20. QR plan paid mới tạo activation.
+21. Queue đầy không làm mất payment.
+22. iOS không tạo được APK ticket.
+23. Android không tạo được mobileconfig ticket.
+24. Ticket không dùng chéo endpoint.
+25. Ticket single-use.
+26. NEXTDNS_KEY không xuất hiện trong public config.
+27. Migration schema cũ thành công.
+28. Admin endpoint có auth và CSRF.
+29. Không có giá trị âm/float trong ví.
+30. State transition không hợp lệ bị từ chối.
+
+Frontend:
+
+- TypeScript compile.
+- Vite production build.
+- Dashboard protected route hoạt động.
+- Login/Register redirect Dashboard.
+- Landing không còn UpgradePortal.
+- Không có mock plans.
+- Empty state hoạt động.
+- iOS chỉ render iOS.
+- Android chỉ render Android.
+- Reload queue giữ đúng platform.
+- Checkout Coin thiếu/đủ hiển thị đúng.
+- Payment pending không hiển thị thành công.
+- Không còn `guideTab`.
+- Không hardcode `a1e971` trong frontend.
+- Không có NEXTDNS_KEY, JWT secret, Cloudinary secret, Google secret trong `frontend/dist`.
+
+==================================================
+Z. QUY TẮC LÀM VIỆC
+==================================================
+
+- Không dùng mock data trong runtime.
+- Fixture/mock chỉ dùng trong tests.
+- Không sửa giá hoặc số dư ở frontend.
+- Không dùng float cho tiền.
+- Không tự đánh dấu payment thành công.
+- Không tạo webhook giả.
+- Không xóa database.
+- Không reset git.
+- Không ghi đè thay đổi hợp lệ của người dùng.
+- Không log secret.
+- Không đưa secret vào báo cáo.
+- Không tự bật server chạy nền.
+- Có thể chạy test/build foreground và phải kết thúc hoàn toàn.
+- Không che lỗi bằng try/catch rỗng.
+- Không trả exception thô cho client.
+- Nội dung tiếng Việt phải là UTF-8, không mojibake.
+- Không tuyên bố hoàn thành nếu chưa chạy tests và production build.
+- Nếu phát hiện yêu cầu phụ thuộc thông tin ngân hàng/webhook chưa có, hãy triển khai cấu trúc, validation, trạng thái pending và Admin reconciliation thật; không bịa cấu hình.
+
+==================================================
+BÁO CÁO CUỐI
+==================================================
+
+Sau khi hoàn thành, báo cáo ngắn gọn nhưng có bằng chứng:
+
+1. Skill AI đã sử dụng.
+2. Nguyên nhân gốc.
+3. Danh sách file đã sửa/tạo.
+4. Database migration.
+5. Luồng Landing → Login → Dashboard.
+6. Luồng chọn gói.
+7. Luồng Coin.
+8. Luồng QR.
+9. Luồng platform iOS/Android.
+10. Cơ chế download ticket.
+11. Admin đã quản lý được những gì.
+12. Lệnh test/build đã chạy.
+13. Số test pass/fail và exit code.
+14. Kiểm tra secret frontend/dist.
+15. Những phần chưa thể kiểm chứng vì thiếu thông tin ngân hàng/webhook thật.
+
+Hãy thực hiện từng phase, kiểm tra sau mỗi phase và sửa tất cả lỗi phát hiện được. Không chỉ tạo giao diện; dữ liệu, thanh toán, queue, platform và phân quyền phải hoạt động xuyên suốt backend–frontend.
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-09-07T22:30:14+07:00.
+</ADDITIONAL_METADATA>

@@ -1,0 +1,27 @@
+.env
+*.env
+created_accounts.json
+*.db
+*.db-wal
+*.db-shm
+*.log
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+dist/
+*.bak
+
+# Runtime uploads and generated state are deployed/persisted separately.
+storage/
+backend/storage/
+queue_state.json
+accounts.json
+tokens.json
+
+# Local editor and OS metadata.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

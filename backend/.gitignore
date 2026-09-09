@@ -1,0 +1,16 @@
+.env
+created_accounts.json
+*.db
+*.db-wal
+*.db-shm
+*.log
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+dist/
+*.bak
+queue_state.json
+accounts.json
+tokens.json
