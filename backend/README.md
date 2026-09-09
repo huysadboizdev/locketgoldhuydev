@@ -283,12 +283,18 @@ User Input (username)
 | `EMAIL`              | Locket account email                        | Yes      |
 | `PASSWORD`           | Locket account password                     | Yes      |
 | `gist_token_url`     | Raw URL to Gist containing request payloads | Yes      |
-| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token for notifications        | Optional |
-| `TELEGRAM_CHAT_ID`   | Telegram Chat ID for receiving alerts       | Optional |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot token (backend only)           | Optional |
+| `TELEGRAM_CHAT_ID`   | Private chat/group receiving order alerts   | Optional |
+| `TELEGRAM_ADMIN_ORDERS_URL` | HTTPS link opened by the Admin button | Optional |
 
 ### Telegram Notifications
 
-To enable Telegram notifications, simply add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` to your `.env` file. The application will automatically detect them.
+Set `TELEGRAM_NOTIFICATIONS_ENABLED=1`, `TELEGRAM_BOT_TOKEN`, and
+`TELEGRAM_CHAT_ID` in the backend environment. Paid Coin orders and confirmed
+VietQR plan purchases are announced once; webhook or client retries do not
+create duplicate alerts. `TELEGRAM_NOTIFY_NEW_ORDERS` and
+`TELEGRAM_NOTIFY_ACTIVATION_SUCCESS` can disable either event independently.
+Never expose the bot token to the frontend or commit it to Git.
 
 ## Troubleshooting
 

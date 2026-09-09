@@ -4,7 +4,11 @@ import tempfile
 import time
 import unittest
 import re
+import hashlib
+import hmac
+import json
 import urllib.parse
+from unittest.mock import patch
 from werkzeug.security import generate_password_hash
 
 temp_db_fd, temp_db_path = tempfile.mkstemp(suffix=".db")
@@ -23,6 +27,8 @@ os.environ["PAYMENT_TRANSFER_PREFIX"] = "LOCKETGOLDHUYDEV"
 os.environ["PAYMENT_TRANSFER_DIGITS"] = "3"
 os.environ["PAYMENT_TTL_SECONDS"] = "600"
 os.environ["PAYMENT_CODE_REUSE_DELAY_SECONDS"] = "86400"
+os.environ["PAYMENT_WEBHOOK_ENABLED"] = "1"
+os.environ["SEPAY_WEBHOOK_SECRET"] = "test-sepay-integration-secret-long-enough"
 
 backend_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if backend_root not in sys.path:
@@ -121,6 +127,20 @@ class VietQRPaymentSystemTestCase(unittest.TestCase):
         self.headers_user1["X-CSRF-Token"] = self.csrf_token
         self.headers_user2["X-CSRF-Token"] = self.csrf_token
         return res
+
+    def _sepay_headers(self, body):
+        timestamp = str(int(time.time()))
+        secret = os.environ["SEPAY_WEBHOOK_SECRET"].encode()
+        digest = hmac.new(
+            secret,
+            timestamp.encode("ascii") + b"." + body,
+            hashlib.sha256,
+        ).hexdigest()
+        return {
+            "Content-Type": "application/json",
+            "X-SePay-Timestamp": timestamp,
+            "X-SePay-Signature": f"sha256={digest}",
+        }
 
     # 1. Định dạng transfer_code: Đúng regex ^LOCKETGOLDHUYDEV[0-9]{3}$
     def test_01_transfer_code_format(self):
@@ -604,6 +624,174 @@ class VietQRPaymentSystemTestCase(unittest.TestCase):
         self.assertEqual(renew_res.status_code, 403)
         self.assertEqual(renew_res.get_json()["error"], "invalid_csrf_token")
 
+    def test_33_sepay_webhook_credits_wallet_exactly_once(self):
+        balance_before = db.get_wallet_balance(101)
+        create_res = self.client.post(
+            "/api/payments/topup",
+            headers=self.headers_user1,
+            json={"amount_vnd": 50000, "idempotency_key": "sepay-auto-topup-once"},
+        )
+        self.assertEqual(create_res.status_code, 200)
+        created = create_res.get_json()
+
+        payload = {
+            "id": 9000001,
+            "gateway": "TPBank",
+            "transactionDate": "2026-09-09 15:30:00",
+            "accountNumber": "HUYDEV204",
+            "code": None,
+            "content": f"NAP TIEN {created['transfer_code']}",
+            "transferType": "in",
+            "description": "SePay integration test",
+            "transferAmount": 50000,
+            "accumulated": 50000,
+            "referenceCode": "SEPAY_TEST_AUTO_TOPUP_1",
+        }
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        headers = self._sepay_headers(body)
+
+        first = self.client.post("/api/payment/webhook", data=body, headers=headers)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.get_json(), {"success": True})
+        self.assertEqual(db.get_wallet_balance(101), balance_before + 50)
+
+        payment = db.get_payment_order_by_id(created["payment_id"])
+        self.assertEqual(payment["status"], "paid")
+        self.assertEqual(payment["bank_transaction_id"], "SEPAY_9000001")
+
+        replay = self.client.post("/api/payment/webhook", data=body, headers=headers)
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(db.get_wallet_balance(101), balance_before + 50)
+
+    def test_34_sepay_webhook_rejects_wrong_amount_and_account(self):
+        balance_before = db.get_wallet_balance(101)
+        create_res = self.client.post(
+            "/api/payments/topup",
+            headers=self.headers_user1,
+            json={"amount_vnd": 30000, "idempotency_key": "sepay-reject-mismatch"},
+        )
+        self.assertEqual(create_res.status_code, 200)
+        created = create_res.get_json()
+
+        base_payload = {
+            "id": 9000002,
+            "gateway": "TPBank",
+            "accountNumber": "HUYDEV204",
+            "code": created["transfer_code"],
+            "content": created["transfer_code"],
+            "transferType": "in",
+            "transferAmount": 29000,
+            "referenceCode": "SEPAY_TEST_MISMATCH_1",
+        }
+        wrong_amount_body = json.dumps(base_payload, separators=(",", ":")).encode()
+        wrong_amount = self.client.post(
+            "/api/payment/webhook",
+            data=wrong_amount_body,
+            headers=self._sepay_headers(wrong_amount_body),
+        )
+        self.assertEqual(wrong_amount.status_code, 200)
+        self.assertEqual(db.get_wallet_balance(101), balance_before)
+        self.assertEqual(db.get_payment_order_by_id(created["payment_id"])["status"], "pending")
+
+        base_payload["id"] = 9000003
+        base_payload["transferAmount"] = 30000
+        base_payload["accountNumber"] = "WRONG_ACCOUNT"
+        wrong_account_body = json.dumps(base_payload, separators=(",", ":")).encode()
+        wrong_account = self.client.post(
+            "/api/payment/webhook",
+            data=wrong_account_body,
+            headers=self._sepay_headers(wrong_account_body),
+        )
+        self.assertEqual(wrong_account.status_code, 200)
+        self.assertEqual(db.get_wallet_balance(101), balance_before)
+        self.assertEqual(db.get_payment_order_by_id(created["payment_id"])["status"], "pending")
+
+    def test_35_sepay_webhook_settles_direct_plan_purchase_once(self):
+        create_res = self.client.post(
+            "/api/payments/plan",
+            headers=self.headers_user1,
+            json={
+                "plan_id": self.plan_id,
+                "platform": "ios",
+                "username": "sepay_direct_plan_user",
+                "idempotency_key": "sepay-direct-plan-once",
+            },
+        )
+        self.assertEqual(create_res.status_code, 200)
+        created = create_res.get_json()
+
+        payload = {
+            "id": 9000004,
+            "gateway": "TPBank",
+            "accountNumber": "HUYDEV204",
+            "code": created["transfer_code"],
+            "content": f"THANH TOAN {created['transfer_code']}",
+            "transferType": "in",
+            "transferAmount": created["amount_vnd"],
+            "referenceCode": "SEPAY_TEST_DIRECT_PLAN_1",
+        }
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        headers = self._sepay_headers(body)
+
+        with patch("locket.notifications.notify_paid_order") as notify_order:
+            first = self.client.post("/api/payment/webhook", data=body, headers=headers)
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(first.get_json(), {"success": True})
+
+            replay = self.client.post("/api/payment/webhook", data=body, headers=headers)
+            self.assertEqual(replay.status_code, 200)
+            self.assertEqual(replay.get_json(), {"success": True})
+            notify_order.assert_called_once()
+
+        payment = db.get_payment_order_by_id(created["payment_id"])
+        self.assertEqual(payment["purpose"], "plan_purchase")
+        self.assertEqual(payment["status"], "paid")
+        self.assertEqual(payment["bank_transaction_id"], "SEPAY_9000004")
+
+        activation = db.get_activation_order_by_id(created["activation_order_id"])
+        self.assertNotEqual(activation["status"], "awaiting_payment")
+
+        replayed_payment = db.get_payment_order_by_id(created["payment_id"])
+        self.assertEqual(replayed_payment["status"], "paid")
+        self.assertEqual(replayed_payment["bank_transaction_id"], "SEPAY_9000004")
+
+    def test_36_sepay_webhook_completes_direct_apk_plan_purchase(self):
+        create_res = self.client.post(
+            "/api/payments/plan",
+            headers=self.headers_user2,
+            json={
+                "plan_id": self.plan_id,
+                "platform": "android",
+                "idempotency_key": "sepay-direct-apk-plan-once",
+            },
+        )
+        self.assertEqual(create_res.status_code, 200)
+        created = create_res.get_json()
+        self.assertEqual(created["fulfillment_mode"], "apk_download")
+
+        payload = {
+            "id": 9000005,
+            "gateway": "TPBank",
+            "accountNumber": "HUYDEV204",
+            "code": None,
+            "content": f"MUA GOI {created['transfer_code']}",
+            "transferType": "in",
+            "transferAmount": created["amount_vnd"],
+            "referenceCode": "SEPAY_TEST_DIRECT_APK_1",
+        }
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        response = self.client.post(
+            "/api/payment/webhook",
+            data=body,
+            headers=self._sepay_headers(body),
+        )
+        self.assertEqual(response.status_code, 200)
+
+        payment = db.get_payment_order_by_id(created["payment_id"])
+        activation = db.get_activation_order_by_id(created["activation_order_id"])
+        self.assertEqual(payment["status"], "paid")
+        self.assertEqual(payment["bank_transaction_id"], "SEPAY_9000005")
+        self.assertEqual(activation["status"], "completed")
 
 if __name__ == "__main__":
     unittest.main()

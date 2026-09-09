@@ -1134,14 +1134,18 @@ def creator_delete(creator_id):
 @admin_token_required
 def creator_admin_image(storage_name):
     from flask import abort, send_file
-    from .creators import SAFE_CREATOR_FILENAME, get_creator_storage_root
+    from .creators import (
+        SAFE_CREATOR_FILENAME,
+        creator_image_mimetype,
+        get_creator_storage_root,
+    )
 
     if not SAFE_CREATOR_FILENAME.fullmatch(storage_name) or not db.get_creator_by_storage_name(storage_name):
         abort(404)
     path = os.path.join(get_creator_storage_root(), storage_name)
     if not os.path.exists(path):
         abort(404)
-    response = send_file(path, mimetype="image/webp")
+    response = send_file(path, mimetype=creator_image_mimetype(storage_name))
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Cache-Control"] = "private, no-store"
     return response

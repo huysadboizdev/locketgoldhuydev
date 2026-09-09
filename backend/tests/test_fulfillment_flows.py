@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 
 temp_db_fd, temp_db_path = tempfile.mkstemp(suffix=".db")
@@ -110,18 +111,20 @@ class FulfillmentFlowsTestCase(unittest.TestCase):
             "contact_facebook": "https://facebook.com/flow.user",
             "idempotency_key": "manual-flow-once",
         }
-        first = self.client.post("/api/orders/coin", headers=self.headers, json=payload)
-        self.assertEqual(first.status_code, 200)
-        first_data = first.get_json()
-        self.assertEqual(first_data["status"], "paid")
-        self.assertEqual(first_data["fulfillment_mode"], "manual_contact")
-        self.assertIsNone(first_data["client_id"])
+        with patch("locket.notifications.notify_paid_order") as notify_order:
+            first = self.client.post("/api/orders/coin", headers=self.headers, json=payload)
+            self.assertEqual(first.status_code, 200)
+            first_data = first.get_json()
+            self.assertEqual(first_data["status"], "paid")
+            self.assertEqual(first_data["fulfillment_mode"], "manual_contact")
+            self.assertIsNone(first_data["client_id"])
 
-        second = self.client.post("/api/orders/coin", headers=self.headers, json=payload)
-        second_data = second.get_json()
-        self.assertEqual(second.status_code, 200)
-        self.assertTrue(second_data["idempotent"])
-        self.assertEqual(second_data["activation_order_id"], first_data["activation_order_id"])
+            second = self.client.post("/api/orders/coin", headers=self.headers, json=payload)
+            second_data = second.get_json()
+            self.assertEqual(second.status_code, 200)
+            self.assertTrue(second_data["idempotent"])
+            self.assertEqual(second_data["activation_order_id"], first_data["activation_order_id"])
+            notify_order.assert_called_once_with(first_data["activation_order_id"])
         queue_count = db.get_conn().execute(
             "SELECT COUNT(*) FROM queue_requests WHERE activation_order_id = ?",
             (first_data["activation_order_id"],),

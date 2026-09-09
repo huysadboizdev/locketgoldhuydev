@@ -1762,6 +1762,19 @@ def purchase_plan_coin():
     client_id = order.get("queue_client_id")
     status = order.get("status")
 
+    # Only the transaction that created and charged the order may announce it.
+    # Idempotent client retries reuse the response without sending duplicates.
+    if tx_status == "ok":
+        try:
+            from ..notifications import notify_paid_order
+
+            notify_paid_order(act_id)
+        except Exception as exc:
+            current_app.logger.warning(
+                "Unable to schedule Telegram order notification (%s)",
+                type(exc).__name__,
+            )
+
     messages = {
         "auto_activation": (
             "Thanh toán thành công! Đơn đã được đưa vào hàng đợi kích hoạt."

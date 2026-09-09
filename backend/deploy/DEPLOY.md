@@ -36,10 +36,10 @@ sudo apt install -y python3 python3-venv python3-pip git nginx ufw fail2ban sqli
 sudo adduser --system --group --shell /bin/bash --home /opt/locket-gold locket
 
 # Tạo thư mục dữ liệu database, downloads và ảnh đánh giá người dùng
-sudo mkdir -p /var/lib/locket-gold /var/lib/locket-gold/downloads /var/lib/locket-gold/reviews
+sudo mkdir -p /var/lib/locket-gold /var/lib/locket-gold/downloads /var/lib/locket-gold/reviews /var/lib/locket-gold/creators
 sudo chown -R locket:www-data /var/lib/locket-gold
 sudo chmod 750 /var/lib/locket-gold
-sudo chmod 750 /var/lib/locket-gold/downloads /var/lib/locket-gold/reviews
+sudo chmod 750 /var/lib/locket-gold/downloads /var/lib/locket-gold/reviews /var/lib/locket-gold/creators
 
 sudo mkdir -p /var/www/locket-gold
 sudo chown -R www-data:www-data /var/www/locket-gold
@@ -99,6 +99,7 @@ TELEGRAM_CHAT_ID=
 
 # Review System & X-Accel-Redirect
 REVIEW_STORAGE_ROOT=/var/lib/locket-gold/reviews
+CREATOR_STORAGE_ROOT=/var/lib/locket-gold/creators
 ENABLE_ACCEL_REDIRECT=1
 
 ```

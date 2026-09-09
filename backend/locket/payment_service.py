@@ -315,6 +315,23 @@ def confirm_payment(payment_id_or_ref, bank_transaction_id=None, current_app_ins
                 pay_order["queue_enqueue_failed"] = True
                 pay_order["queue_error"] = disp_res.get("error", "Enqueue failed")
 
+            # Payment is already committed at this point. Telegram is strictly
+            # best-effort and must never roll back or delay customer fulfillment.
+            try:
+                from .notifications import notify_paid_order
+
+                if current_app_instance is not None:
+                    with current_app_instance.app_context():
+                        notify_paid_order(act_row["id"], payment=pay_order)
+                else:
+                    notify_paid_order(act_row["id"], payment=pay_order)
+            except Exception as exc:
+                if getattr(current_app_instance, "logger", None):
+                    current_app_instance.logger.warning(
+                        "Unable to schedule Telegram order notification (%s)",
+                        type(exc).__name__,
+                    )
+
     return ("ok", pay_order)
 
 

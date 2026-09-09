@@ -44,9 +44,10 @@ class QueueManager:
     RECENT_LOG_MAX = 100
     RECENT_LOG_TTL = 24 * 3600  # public Recent Activity rolls off after 24h
 
-    def __init__(self, rotator):
+    def __init__(self, rotator, app=None):
         db.init()
         self.rotator = rotator
+        self.app = app
         self._lock = threading.Lock()
         self.workers = {}           # slot_id -> (Thread, threading.Event)
         self._last_cleanup = 0.0    # monotonic, kept on one worker only
@@ -595,12 +596,21 @@ class QueueManager:
                 product_id = gold_entitlement.get("product_identifier", "locket_199_1m")
                 expires_date = gold_entitlement.get("expires_date", "")
                 try:
-                    send_telegram_notification(
-                        username,
-                        uid_target,
-                        product_id,
-                        restore_result,
-                    )
+                    if self.app is not None:
+                        with self.app.app_context():
+                            send_telegram_notification(
+                                username,
+                                uid_target,
+                                product_id,
+                                restore_result,
+                            )
+                    else:
+                        send_telegram_notification(
+                            username,
+                            uid_target,
+                            product_id,
+                            restore_result,
+                        )
                 except Exception:
                     pass
 

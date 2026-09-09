@@ -17,7 +17,7 @@ The app is composed in `create_app()`:
 Singletons (rotator, queue_manager) are attached to the Flask `app` object
 so request handlers can reach them via `current_app.rotator` /
 `current_app.queue_manager`. Worker threads receive their reference at
-construction time (`QueueManager(rotator)`).
+construction time (`QueueManager(rotator, app=app)`).
 """
 
 from . import env  # Load environment variables early before other modules evaluate
@@ -53,7 +53,7 @@ def create_app():
         print(f"Error initializing AccountRotator: {e}")
         app.rotator = None
 
-    app.queue_manager = QueueManager(app.rotator)
+    app.queue_manager = QueueManager(app.rotator, app=app)
 
     # Teardown SQLite connection per thread context
     @app.teardown_appcontext

@@ -31,6 +31,8 @@ const formatFollowers = (value?: number | null) => {
 
 const fieldClass = 'min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-3.5 text-sm text-zinc-900 outline-none transition placeholder:text-zinc-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 disabled:bg-zinc-100 disabled:text-zinc-500 disabled:opacity-70 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:disabled:bg-zinc-900';
 const labelClass = 'mb-1.5 block text-xs font-semibold text-zinc-700 dark:text-zinc-300';
+const MAX_CREATOR_IMAGE_BYTES = 5 * 1024 * 1024;
+const CREATOR_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 export const AdminCreators: React.FC = () => {
   const [items, setItems] = useState<AdminCreator[]>([]);
@@ -116,8 +118,24 @@ export const AdminCreators: React.FC = () => {
 
   const onFileChange = (file: File | null) => {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
+    if (file) {
+      const extensionAllowed = /\.(?:jpe?g|png|webp)$/i.test(file.name);
+      if ((!CREATOR_IMAGE_TYPES.has(file.type) && !extensionAllowed) || file.size <= 0) {
+        setScreenshot(null);
+        setPreviewUrl(null);
+        setFormError('Ảnh TikTok phải là tệp JPG, PNG hoặc WebP hợp lệ.');
+        return;
+      }
+      if (file.size > MAX_CREATOR_IMAGE_BYTES) {
+        setScreenshot(null);
+        setPreviewUrl(null);
+        setFormError('Ảnh TikTok không được vượt quá 5 MB.');
+        return;
+      }
+    }
     setScreenshot(file);
     setPreviewUrl(file ? URL.createObjectURL(file) : null);
+    setFormError(null);
   };
 
   const save = async (event: React.FormEvent) => {
@@ -246,7 +264,7 @@ export const AdminCreators: React.FC = () => {
           <div><label className={labelClass}>TikTok handle *</label><input value={handle} onChange={(e) => onHandleChange(e.target.value)} className={fieldClass} placeholder="username" /></div>
           <div><label className={labelClass}>URL TikTok chính thức *</label><input type="url" value={tiktokUrl} onChange={(e) => setTiktokUrl(e.target.value)} className={fieldClass} placeholder="https://www.tiktok.com/@username" /></div>
           <div className="grid gap-4 sm:grid-cols-2"><div><label className={labelClass}>Thứ tự hiển thị</label><input type="number" step="1" value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className={fieldClass} /></div><div><label className={labelClass}>Giữ phần trên ảnh: {cropPercent}%</label><input type="range" min="12" max="45" value={cropPercent} onChange={(e) => setCropPercent(Number(e.target.value))} className="mt-3 w-full accent-amber-500" /><p className="mt-1 text-[11px] leading-4 text-amber-700 dark:text-amber-300/80">Chỉ giữ tên, @TikTok, avatar và follower; loại bỏ bio có số điện thoại/liên hệ.</p></div></div>
-          <div><label className={labelClass}>Screenshot trang TikTok {editing ? '(để trống nếu giữ ảnh cũ)' : '*'}</label><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => onFileChange(e.target.files?.[0] || null)} className="block w-full rounded-xl border border-zinc-300 bg-white p-2.5 text-xs text-zinc-600 file:mr-3 file:rounded-lg file:border-0 file:bg-amber-500 file:px-3 file:py-2 file:font-bold file:text-zinc-950 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300" />
+          <div><label className={labelClass}>Screenshot trang TikTok {editing ? '(để trống nếu giữ ảnh cũ)' : '*'}</label><input type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" onChange={(e) => onFileChange(e.target.files?.[0] || null)} className="block w-full rounded-xl border border-zinc-300 bg-white p-2.5 text-xs text-zinc-600 file:mr-3 file:rounded-lg file:border-0 file:bg-amber-500 file:px-3 file:py-2 file:font-bold file:text-zinc-950 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300" /><p className="mt-1.5 text-[11px] text-zinc-500">Hỗ trợ JPG, PNG, WebP · tối đa 5 MB. Ảnh gốc không được lưu; hệ thống chỉ giữ phần đã cắt an toàn.</p>
             {(previewUrl || editing) && <div className="mt-3 flex justify-center overflow-hidden rounded-2xl border border-zinc-700 bg-black p-2"><div className="relative inline-block overflow-hidden"><AuthenticatedReviewImage src={previewUrl || editing!.screenshot_url} alt="Xem trước screenshot" className="block max-h-80 max-w-full object-contain object-top" />{previewUrl && <><div className="pointer-events-none absolute inset-x-0 top-0 border-b-2 border-emerald-400" style={{ height: `${cropPercent}%` }}><span className="absolute left-2 top-2 rounded-full bg-emerald-500 px-2 py-1 text-[10px] font-bold text-white">Phần công khai</span></div><div className="pointer-events-none absolute left-0 bg-zinc-950/85" style={{ top: `${cropPercent * 0.74}%`, width: '72%', height: `${cropPercent * 0.26}%` }}><span className="absolute bottom-1 left-2 rounded bg-zinc-800 px-1.5 py-0.5 text-[9px] font-bold text-zinc-200">Bio/liên hệ tự che</span></div><div className="pointer-events-none absolute inset-x-0 bottom-0 bg-black/80" style={{ height: `${100 - cropPercent}%` }}><span className="absolute left-1/2 top-2 -translate-x-1/2 whitespace-nowrap rounded-full bg-rose-500 px-2 py-1 text-[10px] font-bold text-white">Phần bị xóa vĩnh viễn</span></div></>}</div></div>}
           </div>
           <div className="grid gap-3 sm:grid-cols-3">{[

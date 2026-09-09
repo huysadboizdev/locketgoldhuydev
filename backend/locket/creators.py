@@ -17,7 +17,11 @@ creators_bp = Blueprint("creators", __name__, url_prefix="/api/creators")
 
 MAX_CREATOR_IMAGE_SIZE = 5 * 1024 * 1024
 MAX_CREATOR_PIXELS = 20_000_000
-SAFE_CREATOR_FILENAME = re.compile(r"^[a-f0-9]{32}\.webp$")
+SAFE_CREATOR_FILENAME = re.compile(r"^[a-f0-9]{32}\.(?:webp|jpg)$")
+
+
+def creator_image_mimetype(storage_name):
+    return "image/jpeg" if str(storage_name or "").lower().endswith(".jpg") else "image/webp"
 
 
 def get_creator_storage_root():
@@ -45,16 +49,19 @@ def process_creator_screenshot(file_storage, crop_percent=24):
         if len(raw) < 16 or file_storage.read(1):
             return None, "Tệp ảnh TikTok không hợp lệ."
 
-        warnings.filterwarnings("error", category=Image.DecompressionBombWarning)
-        with Image.open(io.BytesIO(raw)) as check:
-            if check.format not in ("JPEG", "PNG", "WEBP"):
-                return None, "Chỉ hỗ trợ ảnh JPG, PNG hoặc WebP."
-            if getattr(check, "is_animated", False) or getattr(check, "n_frames", 1) > 1:
-                return None, "Không hỗ trợ ảnh động."
-            width, height = check.size
-            if width * height > MAX_CREATOR_PIXELS:
-                return None, "Ảnh vượt quá giới hạn an toàn 20 megapixel."
-            check.verify()
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", category=Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(raw)) as check:
+                if check.format not in ("JPEG", "PNG", "WEBP"):
+                    return None, "Chỉ hỗ trợ ảnh JPG, PNG hoặc WebP."
+                if getattr(check, "is_animated", False) or getattr(check, "n_frames", 1) > 1:
+                    return None, "Không hỗ trợ ảnh động."
+                width, height = check.size
+                if width <= 0 or height <= 0:
+                    return None, "Kích thước ảnh TikTok không hợp lệ."
+                if width * height > MAX_CREATOR_PIXELS:
+                    return None, "Ảnh vượt quá giới hạn an toàn 20 megapixel."
+                check.verify()
 
         with Image.open(io.BytesIO(raw)) as image:
             image = ImageOps.exif_transpose(image)
@@ -80,12 +87,28 @@ def process_creator_screenshot(file_storage, crop_percent=24):
             image.thumbnail((1400, 900), Image.Resampling.LANCZOS)
             width, height = image.size
 
+            # Encode before touching storage. Some minimal Pillow builds on VPS
+            # do not include WebP; a clean JPEG derivative is a safe fallback.
+            encoded = io.BytesIO()
+            extension = "webp"
+            mimetype = "image/webp"
+            try:
+                image.save(encoded, format="WEBP", quality=84, method=6)
+            except (KeyError, OSError, ValueError):
+                encoded = io.BytesIO()
+                image.save(encoded, format="JPEG", quality=88, optimize=True, progressive=True)
+                extension = "jpg"
+                mimetype = "image/jpeg"
+
             target_dir = get_creator_storage_root()
             os.makedirs(target_dir, exist_ok=True)
-            storage_name = f"{uuid.uuid4().hex}.webp"
+            storage_name = f"{uuid.uuid4().hex}.{extension}"
             target_path = os.path.join(target_dir, storage_name)
             temp_path = f"{target_path}.tmp"
-            image.save(temp_path, format="WEBP", quality=84, method=6)
+            with open(temp_path, "xb") as output:
+                output.write(encoded.getvalue())
+                output.flush()
+                os.fsync(output.fileno())
             os.replace(temp_path, target_path)
             temp_path = None
             return {
@@ -93,10 +116,20 @@ def process_creator_screenshot(file_storage, crop_percent=24):
                 "width": width,
                 "height": height,
                 "file_size": os.path.getsize(target_path),
+                "mime_type": mimetype,
             }, None
     except (Image.DecompressionBombError, Image.DecompressionBombWarning):
         return None, "Ảnh vượt quá giới hạn an toàn."
-    except (OSError, ValueError, TypeError):
+    except PermissionError:
+        current_app.logger.exception(
+            "Creator screenshot storage is not writable: %s",
+            get_creator_storage_root(),
+        )
+        return None, "Máy chủ chưa có quyền lưu ảnh KOL. Vui lòng kiểm tra thư mục CREATOR_STORAGE_ROOT."
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        current_app.logger.warning(
+            "Unable to process creator screenshot (%s)", type(exc).__name__
+        )
         if target_path and os.path.exists(target_path):
             try:
                 os.remove(target_path)
@@ -170,7 +203,7 @@ def public_creator_image(storage_name):
     path = os.path.join(get_creator_storage_root(), storage_name)
     if not os.path.exists(path):
         abort(404)
-    response = send_file(path, mimetype="image/webp", max_age=300)
+    response = send_file(path, mimetype=creator_image_mimetype(storage_name), max_age=300)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
     return response
