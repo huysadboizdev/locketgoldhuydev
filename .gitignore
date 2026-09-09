@@ -25,3 +25,10 @@ tokens.json
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local working materials: keep on this machine, not in the repository root.
+/ANTIGRAVITY_ADMIN_FIX_MASTER_PROMPT.md
+/ANTIGRAVITY_ADMIN_MASTER_PROMPT.md
+/scratch_prompt.txt
+/Locket_v1.200.0-gocmod.com.apk
+/tiktok *.jpg
