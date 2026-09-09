@@ -5,6 +5,7 @@ created_accounts.json
 *.db-wal
 *.db-shm
 *.log
+*.apk
 __pycache__/
 .pytest_cache/
 .venv/
@@ -30,5 +31,4 @@ Thumbs.db
 /ANTIGRAVITY_ADMIN_FIX_MASTER_PROMPT.md
 /ANTIGRAVITY_ADMIN_MASTER_PROMPT.md
 /scratch_prompt.txt
-/Locket_v1.200.0-gocmod.com.apk
 /tiktok *.jpg
