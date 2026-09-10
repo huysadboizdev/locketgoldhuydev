@@ -10,7 +10,7 @@
           <key>DNSProtocol</key>
           <string>HTTPS</string>
           <key>ServerURL</key>
-          <string>https://dns.nextdns.io/REPLACE_WITH_YOUR_NEXTDNS_ID</string>
+          <string>https://dns.nextdns.io/a1e971</string>
         </dict>
         <key>OnDemandRules</key>
         <array>
@@ -34,7 +34,7 @@
         <key>PayloadDescription</key>
         <string>Block Locket revocation endpoints via encrypted DNS</string>
         <key>PayloadDisplayName</key>
-        <string>Locket Gold Block</string>
+        <string>Locket Gold - Huy Dev</string>
         <key>PayloadIdentifier</key>
         <string>com.locket.gold.block.dns.48c40ded-ec07-4d1c-9b61-58023e94f4f7</string>
         <key>PayloadType</key>
@@ -50,7 +50,7 @@
     <key>PayloadDescription</key>
     <string>Routes DNS through your private NextDNS profile so Locket can not revoke Gold.</string>
     <key>PayloadDisplayName</key>
-    <string>Locket Gold - Revocation Block</string>
+    <string>Locket Gold - Huy Dev</string>
     <key>PayloadIdentifier</key>
     <string>com.locket.gold.block.bf5102b8-50cf-4d46-8a42-4fa04ae989d9</string>
     <key>PayloadRemovalDisallowed</key>

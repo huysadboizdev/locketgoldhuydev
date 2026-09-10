@@ -17,6 +17,36 @@ from ..user_auth import validate_csrf
 from . import bp
 
 
+# --- Gold check cache (in-memory, 5-minute TTL) ---
+# Reduces load on RevenueCat API and prevents rate limiting / transient failures
+# from blocking legitimate new-user purchases. This is a backend performance
+# cache only; it does NOT override RevenueCat's authoritative subscription state.
+_GOLD_CACHE = {}
+_GOLD_CACHE_TTL = 300  # 5 minutes
+
+
+def _get_cached_gold_check(raw_username):
+    """Return cached gold check result if fresh, else None."""
+    cache_key = raw_username.strip().lower()
+    cached = _GOLD_CACHE.get(cache_key)
+    if cached is None:
+        return None
+    ts, result = cached
+    if (time.time() - ts) < _GOLD_CACHE_TTL:
+        return result
+    del _GOLD_CACHE[cache_key]
+    return None
+
+
+def _set_cached_gold_check(raw_username, result):
+    """Store a gold check result in cache."""
+    cache_key = raw_username.strip().lower()
+    _GOLD_CACHE[cache_key] = (time.time(), result)
+
+
+# --- End Gold cache ---
+
+
 def _mobileconfig_path():
     env_path = os.getenv("MOBILECONFIG_PATH")
     if env_path:
@@ -131,9 +161,10 @@ def _validate_fulfillment_payload(plan, platform, body):
                 "success": False, "error": "invalid_contact_facebook",
                 "msg": "Vui lòng nhập liên kết Facebook HTTPS hợp lệ.",
             }), 400)
-        username = ""
+        # Keep username from body for gold check - don't clear it
     elif mode == "apk_download":
-        username = ""
+        # Keep username from body for gold check
+        pass
     return mode, username, zalo, facebook, None
 
 
@@ -193,6 +224,117 @@ def _maintenance_json_response():
         "msg": m.get("message") or "Hệ thống đang bảo trì.",
         "end_at": m.get("end_at") or None,
     }), 503
+
+
+GOLD_BLOCK_MSG = (
+    "Tài khoản đã mua/dùng Gold — gói này chỉ cho người chưa từng đăng ký. "
+    "Vui lòng đổi gói mới."
+)
+
+
+def _resolve_locket_uid_for_check(raw):
+    from ..user_resolver import resolve_locket_uid
+    uid = resolve_locket_uid(raw)
+    if uid:
+        return uid
+    try:
+        info = current_app.queue_manager.call_round_robin("getUserByUsername", raw)
+        uid = (info.get("result", {}).get("data") or {}).get("uid")
+    except Exception:
+        uid = None
+    return uid
+
+
+def _live_gold_status(uid):
+    """Read-only live Gold check. Raises on failure (callers fail closed)."""
+    from ..queue_manager import SUBSCRIPTION_IDS
+    slot = current_app.rotator.list_ids()[0]
+    api = current_app.rotator.get(slot)
+    sub = api.getSubscriber(uid)
+    ent = (sub.get("subscriber", {}).get("entitlements", {}).get("Gold") or {})
+    pid = ent.get("product_identifier")
+    expires = ent.get("expires_date")
+    is_gold = False
+    if pid in SUBSCRIPTION_IDS:
+        is_gold = True
+    elif expires:
+        try:
+            exp_dt = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+            is_gold = exp_dt > datetime.now(timezone.utc)
+        except Exception:
+            is_gold = True
+    return is_gold, expires, pid
+
+
+def _gold_check(raw_username):
+    """Shared new-user-only precheck. Never uses restorePurchase to check.
+    
+    Security policy:
+    - User WITH history (already_registered=True) → BLOCK 100% (fail-closed)
+    - User WITH live Gold (is_gold=True) → BLOCK 100% (fail-closed)
+    - User NEW + RevenueCat timeout → ALLOW purchase (fail-open)
+    - User NEW + no uid resolvable → ALLOW (fail-open)
+    """
+    norm = db.normalize_locket_username(raw_username)
+    already, order = db.has_prior_activation_for_locket_username(norm)
+    
+    # 1. CHECK HISTORY — user đã từng mua Gold qua hệ thống → BLOCK 100%
+    if already:
+        # 🚫 FAIL-CLOSED: user đã từng có Gold → chặn ngay
+        return {
+            "already_registered": True,
+            "order_status": (order or {}).get("status"),
+            "uid": None, "is_gold": False,
+            "expires_date": None, "product_id": None,
+            "blocked": True, "check": "history",
+            "error": None,
+        }
+    
+    # 2. CHECK LIVE REVENUECAT — user đang có Gold live → BLOCK 100%
+    uid = _resolve_locket_uid_for_check(raw_username)
+    is_gold, expires, pid = False, None, None
+    check = "history"
+    
+    if uid:
+        try:
+            is_gold, expires, pid = _live_gold_status(uid)
+            check = "live"
+        except Exception:
+            # RevenueCat lỗi + user CHƯA CÓ history → user mới → CHO PHÉP MUA
+            # ✅ FAIL-OPEN cho user mới
+            return {
+                "already_registered": False,
+                "order_status": None,
+                "uid": uid, "is_gold": False,
+                "expires_date": None, "product_id": None,
+                "blocked": False, "check": "timeout",
+                "error": None,
+            }
+    
+    # 3. Decision: block only if live check says gold, otherwise allow
+    return {
+        "already_registered": bool(already),
+        "order_status": (order or {}).get("status"),
+        "uid": uid, "is_gold": is_gold,
+        "expires_date": expires, "product_id": pid,
+        "blocked": bool(is_gold),  # chỉ block nếu RevenueCat xác nhận đang có Gold
+        "check": check,
+        "error": None,
+    }
+
+
+def _gold_block_error(raw_username):
+    """Return None if purchase may proceed, else (error_code, msg).
+    
+    Fail-closed for known Gold users (history OR live).
+    Fail-open for new users when RevenueCat is unavailable.
+    """
+    result = _gold_check(raw_username)
+    if result["is_gold"]:
+        return ("already_gold_live", GOLD_BLOCK_MSG)
+    if result["already_registered"]:
+        return ("already_registered", GOLD_BLOCK_MSG)
+    return None
 
 
 @bp.route("/")
@@ -591,6 +733,47 @@ def get_user_info():
         return jsonify({"success": False, "msg": "Đã xảy ra lỗi khi tìm kiếm tài khoản Locket."}), 500
 
 
+@bp.route("/api/check-gold", methods=["POST"])
+@access_required
+def check_gold():
+    """New-user-only precheck: history DB + live RevenueCap Gold (read-only)."""
+    blocked = _maintenance_json_response()
+    if blocked is not None:
+        return blocked
+    rotator = current_app.rotator
+    if rotator is None or rotator.size() == 0:
+        return _no_accounts_response()
+
+    data = request.get_json(silent=True) or {}
+    raw = (data.get("username") or "").strip()
+    if not raw:
+        return jsonify({"success": False, "error": "username_required"}), 400
+
+    # Try cache first to avoid hitting RevenueCat on every request
+    # Skip cache in TESTING mode to avoid cross-test contamination
+    cached_result = _get_cached_gold_check(raw) if not current_app.config.get("TESTING") else None
+    if cached_result is not None:
+        result = cached_result
+    else:
+        result = _gold_check(raw)
+        # Cache only hard-block results (history or live Gold).
+        # Do NOT cache timeout/fail-open results — let new users always proceed.
+        if not current_app.config.get("TESTING") and result["blocked"]:
+            _set_cached_gold_check(raw, result)
+
+    return jsonify({
+        "success": True,
+        "uid": result["uid"],
+        "is_gold": result["is_gold"],
+        "expires_date": result["expires_date"],
+        "product_id": result["product_id"],
+        "already_registered": result["already_registered"],
+        "order_status": result["order_status"],
+        "blocked": result["blocked"],
+        "check": result["check"],
+    })
+
+
 @bp.route("/api/restore", methods=["POST"])
 @access_required
 def restore_purchase():
@@ -619,6 +802,11 @@ def restore_purchase():
     username = (data.get("username") or "").strip()
     if not username:
         return jsonify({"success": False, "msg": "Username is required"}), 400
+
+    gold_block = _gold_block_error(username)
+    if gold_block is not None:
+        code, msg = gold_block
+        return jsonify({"success": False, "error": code, "msg": msg}), 409
 
     user_id = g.current_user["id"]
 
@@ -1028,7 +1216,8 @@ def create_plan_payment():
                 "msg": str(exc),
             }), 400
 
-    # Idempotency check
+    # Idempotency check BEFORE gold precheck: an exact retry must return the
+    # original order instead of being blocked as already_registered.
     if idempotency_key:
         existing = db.get_payment_order_by_idempotency(user_id, idempotency_key)
         if existing:
@@ -1069,6 +1258,11 @@ def create_plan_payment():
                 "error": "idempotency_conflict",
                 "msg": "Khóa xử lý trùng lặp nhưng nội dung yêu cầu khác nhau.",
             }), 409
+
+    gold_block = _gold_block_error(username)
+    if gold_block is not None:
+        code, msg = gold_block
+        return jsonify({"success": False, "error": code, "msg": msg}), 409
 
     conn = db.get_conn()
     now = time.time()
@@ -1711,8 +1905,62 @@ def purchase_plan_coin():
             "msg": "Khóa chống trùng giao dịch không hợp lệ.",
         }), 400
     coupon_code = str(body.get("coupon_code") or "").strip()
-    idempotency_key = client_idem or f"coin_order_{user_id}_{plan_id}_{secrets.token_hex(12)}"
-    tx_status, tx_res = db.purchase_plan_with_coin_atomic(
+
+    # Idempotency dedupe BEFORE gold precheck: an exact retry must return the
+    # original order instead of being blocked as already_registered.
+    # Gold check below applies only to new content.
+    tx_status = None
+    tx_res = None
+    if client_idem:
+        from .. import coupon_service
+        normalized_request_coupon = None
+        coupon_format_ok = True
+        if coupon_code:
+            try:
+                normalized_request_coupon = coupon_service.normalize_code(coupon_code)
+            except ValueError:
+                coupon_format_ok = False
+        if coupon_format_ok:
+            conn = db.get_conn()
+            existing_tx = conn.execute(
+                "SELECT * FROM wallet_transactions WHERE idempotency_key = ?",
+                (client_idem,),
+            ).fetchone()
+            if existing_tx is not None:
+                existing_order = None
+                if existing_tx["reference_type"] == "activation_order" and existing_tx["reference_id"]:
+                    existing_order = conn.execute(
+                        "SELECT * FROM activation_orders WHERE id = ?",
+                        (existing_tx["reference_id"],),
+                    ).fetchone()
+                if (existing_order is not None
+                        and existing_order["user_id"] == user_id
+                        and existing_order["plan_id"] == plan_id
+                        and existing_order["platform"] == platform
+                        and existing_order["fulfillment_mode_snapshot"] == mode
+                        and (existing_order["locket_username"] or "") == (username or "").strip()
+                        and (existing_order["contact_zalo"] or "") == (contact_zalo or "").strip()
+                        and (existing_order["contact_facebook"] or "") == (contact_facebook or "").strip()
+                        and (existing_order["coupon_code_snapshot"] or "") == (normalized_request_coupon or "")):
+                    tx_status, tx_res = "idempotent", {
+                        "order": dict(existing_order),
+                        "remaining_balance": existing_tx["balance_after"],
+                    }
+                else:
+                    return jsonify({
+                        "success": False,
+                        "error": "idempotency_conflict",
+                        "msg": "Khóa giao dịch đã được dùng cho một yêu cầu khác.",
+                    }), 409
+
+    if tx_status is None:
+        gold_block = _gold_block_error(username)
+        if gold_block is not None:
+            code, msg = gold_block
+            return jsonify({"success": False, "error": code, "msg": msg}), 409
+
+        idempotency_key = client_idem or f"coin_order_{user_id}_{plan_id}_{secrets.token_hex(12)}"
+        tx_status, tx_res = db.purchase_plan_with_coin_atomic(
         user_id=user_id,
         plan_id=plan_id,
         platform=platform,
@@ -1738,6 +1986,13 @@ def purchase_plan_coin():
             **tx_res,
             "msg": "Số dư Coin không đủ.",
         }), 400
+    if tx_status == "gold_blocked":
+        return jsonify({
+            "success": False,
+            "error": tx_res.get("error", "already_registered"),
+            "msg": tx_res.get("msg", "Tài khoản đã có Gold."),
+            "blocked": True,
+        }), 409
     if tx_status == "idempotency_conflict":
         return jsonify({
             "success": False,

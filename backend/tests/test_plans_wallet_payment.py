@@ -850,6 +850,133 @@ class PlansWalletPaymentTestCase(unittest.TestCase):
         st_bad, _ = db.update_activation_order_status(oid, "queued")
         self.assertEqual(st_bad, "invalid_transition")
 
+    # -------------------------------------------------------------
+    # 31. Gold block cho apk_download và manual_contact (NEW)
+    # -------------------------------------------------------------
+    def test_31_gold_block_prevents_repurchase_for_all_fulfillment_modes(self):
+        """User with prior completed Gold activation cannot repurchase via apk_download or manual_contact modes."""
+        from locket import db as dbmod
+        dbmod.close_conn()
+        dbmod.init()
+        
+        # Create a plan that uses apk_download for android (like Gold Không VPN)
+        plan_id = dbmod.create_plan(
+            name="Gold Không VPN Test",
+            slug=f"gold_novpn_test_{int(time.time()*1000)}",
+            short_description="Test no-VPN plan",
+            platform="all",
+            price_coin=20,
+            price_vnd=20000,
+            duration_days=365,
+            is_active=1,
+            features=["Feature A"],
+            sort_order=100,
+            stock_limit=-1,
+        )
+        
+        # Give user1 some coins
+        dbmod.apply_wallet_transaction(1, "topup", 100, "test_topup", 999, "test")
+        
+        target_username = "goldblocktest_user"
+        
+        # 1. Create a completed activation order for this username (simulating prior Gold)
+        prior_order_id = dbmod.create_activation_order(
+            user_id=2,  # Different user_id to simulate prior owner
+            plan_id=plan_id,
+            target_username=target_username,
+            platform="android",
+            payment_method="coin",
+            paid_amount_coin=20,
+        )
+        # Mark it as completed
+        dbmod.update_activation_order_status(prior_order_id, "completed")
+        
+        csrf_res = self.client.get("/api/auth/csrf")
+        self.csrf_token = csrf_res.get_json()["csrf_token"]
+        self.headers_user1["X-CSRF-Token"] = self.csrf_token
+        
+        # 2. Try to buy apk_download plan for SAME username (already has Gold)
+        res = self.client.post(
+            "/api/orders/coin",
+            json={
+                "plan_id": plan_id,
+                "platform": "android",
+                "username": target_username,
+                "idempotency_key": f"test-{int(time.time()*1000)}",
+            },
+            headers=self.headers_user1,
+        )
+        # Should be blocked with 409
+        self.assertIn(res.status_code, [409, 400])
+        if res.status_code == 409:
+            data = res.get_json()
+            self.assertIn("error", data)
+            self.assertIn(data["error"], ["already_registered", "already_gold_live"])
+        
+        # 3. Try with manual_contact mode - simulate by setting android to manual_contact
+        # First set android fulfillment mode for this plan
+        conn = dbmod.get_conn()
+        conn.execute("UPDATE plans SET android_fulfillment_mode = ? WHERE id = ?", ("manual_contact", plan_id))
+        
+        csrf_res = self.client.get("/api/auth/csrf")
+        self.csrf_token = csrf_res.get_json()["csrf_token"]
+        self.headers_user1["X-CSRF-Token"] = self.csrf_token
+        
+        res2 = self.client.post(
+            "/api/orders/coin",
+            json={
+                "plan_id": plan_id,
+                "platform": "android",
+                "username": target_username,  # Same username
+                "contact_zalo": "0909090909",
+                "contact_facebook": "https://facebook.com/test",
+                "idempotency_key": f"test2-{int(time.time()*1000)}",
+            },
+            headers=self.headers_user1,
+        )
+        # Should also be blocked
+        self.assertIn(res2.status_code, [409, 400])
+        if res2.status_code == 409:
+            data2 = res2.get_json()
+            self.assertIn("error", data2)
+
+    # -------------------------------------------------------------
+    # 32. User chưa có Gold có thể mua bình thường (regression check)
+    # -------------------------------------------------------------
+    def test_32_new_user_can_purchase_without_block(self):
+        """User without prior Gold activation can purchase normally."""
+        from locket import db as dbmod
+        dbmod.close_conn()
+        dbmod.init()
+        
+        plan_id = dbmod.create_plan(
+            name="Plan Test No Gold",
+            slug=f"plan-nogold-{int(time.time()*1000)}",
+            price_coin=15,
+            price_vnd=15000,
+        )
+        
+        dbmod.apply_wallet_transaction(1, "topup", 100, "test_topup", 999, "test")
+        
+        csrf_res = self.client.get("/api/auth/csrf")
+        self.csrf_token = csrf_res.get_json()["csrf_token"]
+        self.headers_user1["X-CSRF-Token"] = self.csrf_token
+        
+        # New username that has no prior activation
+        res = self.client.post(
+            "/api/orders/coin",
+            json={
+                "plan_id": plan_id,
+                "platform": "android",
+                "username": f"newuser_{int(time.time()*1000)}",
+                "idempotency_key": f"newuser-{int(time.time()*1000)}",
+            },
+            headers=self.headers_user1,
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data.get("success"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -263,7 +263,7 @@ class CouponPopupSystemTestCase(unittest.TestCase):
             json={
                 "plan_id": self.plan_30k,
                 "platform": "ios",
-                "username": "test_locket_user",
+                "username": "test_locket_user_refund",
                 "device_id": "test-device-uuid-1",
                 "coupon_code": "COIN_SAVE_20",
             },
@@ -300,7 +300,7 @@ class CouponPopupSystemTestCase(unittest.TestCase):
             json={
                 "plan_id": self.plan_30k,
                 "platform": "ios",
-                "username": "test_locket_user",
+                "username": "test_locket_user_refund_2",
                 "device_id": "test-device-uuid-2",
                 "coupon_code": "COIN_SAVE_20",
             },
@@ -334,7 +334,7 @@ class CouponPopupSystemTestCase(unittest.TestCase):
             json={
                 "plan_id": self.plan_30k,
                 "platform": "android",
-                "username": "test_locket_user",
+                "username": "test_locket_user_lifecycle",
                 "coupon_code": "QR_SAVE_5K",
             },
             headers=self.headers_user1,
@@ -386,7 +386,7 @@ class CouponPopupSystemTestCase(unittest.TestCase):
         # User 1 creates payment order -> takes 1/1 quota
         res1 = self.client.post(
             "/api/payments/plan",
-            json={"plan_id": self.plan_30k, "platform": "ios", "username": "test_locket_user", "coupon_code": "QR_REJECT_TEST"},
+            json={"plan_id": self.plan_30k, "platform": "ios", "username": "reject_user", "coupon_code": "QR_REJECT_TEST"},
             headers=self.headers_user1,
         )
         self.assertEqual(res1.status_code, 200)
@@ -395,7 +395,7 @@ class CouponPopupSystemTestCase(unittest.TestCase):
         # User 2 tries to use the coupon -> quota exceeded because User 1 holds reservation
         res2 = self.client.post(
             "/api/payments/plan",
-            json={"plan_id": self.plan_30k, "platform": "ios", "username": "test_locket_user", "coupon_code": "QR_REJECT_TEST"},
+            json={"plan_id": self.plan_30k, "platform": "ios", "username": "reject_user", "coupon_code": "QR_REJECT_TEST"},
             headers=self.headers_user2,
         )
         self.assertEqual(res2.status_code, 400)
@@ -409,7 +409,7 @@ class CouponPopupSystemTestCase(unittest.TestCase):
         # Now User 2 can successfully use the released coupon!
         res2_retry = self.client.post(
             "/api/payments/plan",
-            json={"plan_id": self.plan_30k, "platform": "ios", "username": "test_locket_user", "coupon_code": "QR_REJECT_TEST"},
+            json={"plan_id": self.plan_30k, "platform": "ios", "username": "reject_user", "coupon_code": "QR_REJECT_TEST"},
             headers=self.headers_user2,
         )
         self.assertEqual(res2_retry.status_code, 200)
@@ -428,7 +428,7 @@ class CouponPopupSystemTestCase(unittest.TestCase):
 
         res = self.client.post(
             "/api/payments/plan",
-            json={"plan_id": self.plan_30k, "platform": "ios", "username": "test_locket_user", "coupon_code": "RENEW_COUPON_10K"},
+            json={"plan_id": self.plan_30k, "platform": "ios", "username": "renew_user", "coupon_code": "RENEW_COUPON_10K"},
             headers=self.headers_user1,
         )
         self.assertEqual(res.status_code, 200)
@@ -479,16 +479,16 @@ class CouponPopupSystemTestCase(unittest.TestCase):
 
         results = []
 
-        def worker(headers):
+        def worker(headers, username):
             res = self.client.post(
                 "/api/payments/plan",
-                json={"plan_id": self.plan_30k, "platform": "ios", "username": "test_locket_user", "coupon_code": "RACE_COUPON_1"},
+                json={"plan_id": self.plan_30k, "platform": "ios", "username": username, "coupon_code": "RACE_COUPON_1"},
                 headers=headers,
             )
             results.append((res.status_code, res.get_json()))
 
-        t1 = threading.Thread(target=worker, args=(self.headers_user1,))
-        t2 = threading.Thread(target=worker, args=(self.headers_user2,))
+        t1 = threading.Thread(target=worker, args=(self.headers_user1, "race_user_a"))
+        t2 = threading.Thread(target=worker, args=(self.headers_user2, "race_user_b"))
 
         t1.start()
         t2.start()

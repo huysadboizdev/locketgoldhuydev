@@ -27,6 +27,7 @@ import type {
   CoinPurchaseResponse,
   PlatformConfigResponse,
   ValidateCouponResponse,
+  GoldCheckResponse,
 } from '../types/api';
 
 
@@ -417,4 +418,61 @@ export async function fetchPlatformConfig(): Promise<PlatformConfigResponse> {
   return apiClient<PlatformConfigResponse>('/api/platform-config', {
     method: 'GET',
   });
+}
+
+/**
+ * Kiểm tra Gold/precheck trước khi cho phép mua gói new-user-only
+ * Caches result in localStorage for 5 minutes to reduce API calls.
+ */
+export async function fetchGoldCheck(username: string): Promise<GoldCheckResponse> {
+  const cacheKey = `locket_gold_check_${username.trim().toLowerCase()}`;
+  const cacheTTL = 5 * 60 * 1000; // 5 minutes
+
+  // Try localStorage cache first
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      const cached = window.localStorage.getItem(cacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Date.now() - parsed.timestamp < cacheTTL) {
+          return parsed.data;
+        }
+      }
+    } catch {
+      // Ignore cache errors, fall through to API
+    }
+  }
+
+  const res = await apiClient<GoldCheckResponse>('/api/check-gold', {
+    method: 'POST',
+    body: JSON.stringify({ username }),
+  });
+
+  // Cache successful results only
+  if (typeof window !== 'undefined' && window.localStorage && !res.error) {
+    try {
+      window.localStorage.setItem(cacheKey, JSON.stringify({
+        data: res,
+        timestamp: Date.now(),
+      }));
+    } catch {
+      // Ignore cache write errors
+    }
+  }
+
+  return res;
+}
+
+/**
+ * Clear cached gold check for a username (call after a successful purchase)
+ */
+export function clearGoldCheckCache(username: string): void {
+  const cacheKey = `locket_gold_check_${username.trim().toLowerCase()}`;
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      window.localStorage.removeItem(cacheKey);
+    } catch {
+      // Ignore
+    }
+  }
 }

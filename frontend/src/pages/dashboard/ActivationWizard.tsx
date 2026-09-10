@@ -6,9 +6,12 @@ import {
   PublicDnsConfig,
   FulfillmentMode,
   CouponQuote,
+  GoldCheckResponse,
 } from '../../types/api';
 import {
   fetchUserInfo,
+  fetchGoldCheck,
+  clearGoldCheckCache,
   purchasePlanWithCoin,
   createPlanPayment,
   validateCoupon,
@@ -21,6 +24,7 @@ import {
 } from '../../api/endpoints';
 import { PlanCatalog } from './PlanCatalog';
 import { PaymentQrPanel, PaymentQrData } from '../../components/payment/PaymentQrPanel';
+import { ModalPortal } from '../../components/common/ModalPortal';
 import { usePaymentPolling } from '../../hooks/usePaymentPolling';
 import { useToast } from '../../hooks/useToast';
 import {
@@ -54,6 +58,25 @@ interface ActivationWizardProps {
 
 type WizardStep = 'plan' | 'platform' | 'username' | 'contact' | 'payment' | 'completed';
 
+export const GOLD_BLOCK_POPUP_TITLE = 'Tài khoản đã dùng Gold';
+
+/**
+ * Tra ve message tieng Viet (co dau) khi can block, hoac null neu cho qua.
+ * Thu tu uu tien: live co Gold -> da tung mua qua shop -> timeout/fail-closed.
+ */
+export const getGoldBlockMessage = (gold: GoldCheckResponse): string | null => {
+  if (gold.is_gold === true) {
+    return `Tài khoản này đang có Gold đến ngày ${gold.expires_date || 'gần đây'}. Gói này chỉ dành cho người chưa từng đăng ký. Vui lòng đổi gói khác.`;
+  }
+  if (!gold.is_gold && gold.already_registered === true) {
+    return `Tài khoản này đã từng mua Gold trên hệ thống${gold.order_status ? ` (đơn ${gold.order_status})` : ''}. Gói này chỉ dành cho người mới. Vui lòng đổi gói khác.`;
+  }
+  if (!gold.success || gold.error === 'gold_check_unavailable' || gold.blocked) {
+    return 'Không kiểm tra được Gold lúc này. Vui lòng đổi gói khác hoặc thử lại sau.';
+  }
+  return null;
+};
+
 const getFulfillmentMode = (plan: PlanItem, platform: DevicePlatform): Exclude<FulfillmentMode, 'disabled'> => {
   const configured = platform === 'ios'
     ? plan.ios_fulfillment_mode
@@ -80,6 +103,7 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
   const [userInfo, setUserInfo] = useState<UserInfoData | null>(null);
   const [isVerifyingUser, setIsVerifyingUser] = useState(false);
   const [userVerifyError, setUserVerifyError] = useState<string | null>(null);
+  const [goldBlockMessage, setGoldBlockMessage] = useState<string | null>(null);
   const [contactZalo, setContactZalo] = useState('');
   const [contactFacebook, setContactFacebook] = useState('');
   const [contactError, setContactError] = useState<string | null>(null);
@@ -253,6 +277,19 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
     try {
       const res = await fetchUserInfo(raw);
       if (res && res.success && res.data) {
+        let gold: GoldCheckResponse;
+        try {
+          gold = await fetchGoldCheck(raw);
+        } catch {
+          gold = { success: false, is_gold: false, already_registered: false, blocked: true, error: 'gold_check_unavailable' };
+        }
+        const blockMessage = getGoldBlockMessage(gold);
+        if (blockMessage) {
+          setUserVerifyError(blockMessage);
+          setUserInfo(null);
+          setGoldBlockMessage(blockMessage);
+          return;
+        }
         setUserInfo(res.data);
       } else {
         setUserVerifyError(res.msg || 'Không tìm thấy tài khoản Locket. Vui lòng kiểm tra lại.');
@@ -402,6 +439,8 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
         setQueueStatus(res.status === 'queued' ? 'waiting' : res.status);
         setCurrentStep('completed');
         onRefreshWallet();
+        // Clear gold check cache so backend re-checks on next access
+        clearGoldCheckCache(usernameInput.trim());
         if (onOrderCreated) onOrderCreated(res.activation_order_id);
       } else {
         setPaymentError(res.msg || 'Thanh toán bằng Coin thất bại.');
@@ -457,6 +496,8 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
           locket_username: usernameInput.trim(),
           platform: selectedPlatform,
         });
+        // Clear gold check cache so backend re-checks on next access
+        clearGoldCheckCache(usernameInput.trim());
       } else {
         setPaymentError(res.msg || 'Không thể tạo mã thanh toán VietQR.');
       }
@@ -466,6 +507,17 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
       setIsProcessingPayment(false);
     }
   };
+
+  // Auto create QR order when entering payment step if user chooses QR
+  useEffect(() => {
+    if (currentStep === 'payment' && paymentMethod === 'qr' && !qrOrder && !isProcessingPayment) {
+      const signature = `${selectedPlan?.id || ''}:${selectedPlatform || ''}:${fulfillmentMode || ''}:${usernameInput.trim()}:${contactZalo.trim()}:${contactFacebook.trim()}:${appliedCoupon?.code || ''}`;
+      if (lastAutoQrSignatureRef.current !== signature) {
+        lastAutoQrSignatureRef.current = signature;
+        void handleCreateQrPayment();
+      }
+    }
+  }, [currentStep, paymentMethod, appliedCoupon, qrOrder, isProcessingPayment]);
 
   // Auto create QR order when entering payment step if user chooses QR
   useEffect(() => {
@@ -608,6 +660,10 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
     setUsernameInput('');
     setUserInfo(null);
     setUserVerifyError(null);
+    setGoldBlockMessage(null);
+    setCouponInput('');
+    setAppliedCoupon(null);
+    setCouponError(null);
     setContactZalo('');
     setContactFacebook('');
     setContactError(null);
@@ -789,6 +845,7 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
                 value={usernameInput}
                 onChange={(e) => {
                   setUsernameInput(e.target.value);
+                  setUserInfo(null);
                   setUserVerifyError(null);
                 }}
                 placeholder="VD: huydev hoặc locket.cam/huydev"
@@ -858,8 +915,11 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
 
             <button
               type="button"
-              disabled={!usernameInput.trim() || isVerifyingUser}
-              onClick={() => setCurrentStep('payment')}
+              disabled={!userInfo || isVerifyingUser}
+              onClick={() => {
+                if (!userInfo) return;
+                setCurrentStep('payment');
+              }}
               className="gold-primary rounded-2xl px-6 py-3 text-xs sm:text-sm font-bold flex items-center gap-2 transition-all disabled:opacity-50"
             >
               <span>Tiếp tục thanh toán</span>
@@ -1542,6 +1602,33 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
           </div>
         </div>
       )}
+
+      {/* Popup doi goi khi tai khoan bi chan Gold precheck */}
+      <ModalPortal
+        isOpen={goldBlockMessage !== null}
+        onClose={() => setGoldBlockMessage(null)}
+        className="max-w-md"
+        ariaLabel={GOLD_BLOCK_POPUP_TITLE}
+      >
+        <div className="p-6">
+          <h3 className="text-lg font-bold text-zinc-900 dark:text-zinc-100 mb-2">
+            {GOLD_BLOCK_POPUP_TITLE}
+          </h3>
+          <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-6">
+            {goldBlockMessage}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setGoldBlockMessage(null);
+              handleReset();
+            }}
+            className="gold-primary w-full rounded-2xl px-4 py-3 text-xs sm:text-sm font-bold transition-all"
+          >
+            Về trang chủ chọn gói
+          </button>
+        </div>
+      </ModalPortal>
     </div>
   );
 };

@@ -1,4 +1,5 @@
 import json
+import os
 import requests
 import time
 import random
@@ -31,6 +32,41 @@ def _post_with_proxy(url, *, headers=None, json_body=None, data=None, timeout=20
             if data is not None:
                 kw["data"] = data
             resp = requests.post(url, **kw)
+            # Per-proxy health: 5xx counts as a proxy/upstream issue too.
+            if pid is not None:
+                if resp.status_code < 500:
+                    proxy_pool.mark_ok(pid)
+                else:
+                    proxy_pool.mark_err(pid, f"HTTP {resp.status_code}")
+            # Non-5xx → return immediately. 5xx → try next attempt.
+            if resp.status_code < 500 or pid is None:
+                return resp
+        except Exception as e:
+            last_exc = e
+            if pid is not None:
+                proxy_pool.mark_err(pid, str(e)[:200])
+            continue
+    if last_exc is not None:
+        raise last_exc
+    return resp  # final 5xx response after exhausting proxies
+
+
+def _get_with_proxy(url, *, headers=None, timeout=20):
+    """GET with the proxy pool: tries up to 3 different proxies, then direct.
+    Returns the first response we got (any status), so the caller decides
+    success/failure. Raises only if every attempt threw a network error."""
+    attempts = []
+    for _ in range(3):
+        pid, pdict = proxy_pool.next_proxy()
+        if pid is None:
+            break
+        attempts.append((pid, pdict))
+    attempts.append((None, None))  # direct fallback
+
+    last_exc = None
+    for pid, pdict in attempts:
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout, proxies=pdict)
             # Per-proxy health: 5xx counts as a proxy/upstream issue too.
             if pid is not None:
                 if resp.status_code < 500:
@@ -94,6 +130,42 @@ class LocketAPI:
                 f"API request failed with status code {response.status_code}: {response.text}"
             )
 
+    def getSubscriber(self, uid):
+        """Read-only RevenueCat subscriber lookup for the Gold precheck.
+
+        Returns:
+            dict: The subscriber JSON (may be
+                ``{subscriber: {entitlements: {Gold: {...}}}}``).
+                A 404 (unknown uid) maps to
+                ``{"subscriber": {"entitlements": {}}}``.
+
+        Raises:
+            ValueError: If uid is empty.
+            Exception: ``Gold check unavailable: ...`` on 5xx/timeout/parse errors.
+        """
+        if not uid:
+            raise ValueError("UID is required")
+        _REVENUECAT_BEARER = os.getenv("REVENUECAT_PUBLIC_KEY", "appl_***REDACTED***")
+        url = f"https://api.revenuecat.com/v1/subscribers/{uid}"
+        headers = {
+            "Authorization": f"Bearer {_REVENUECAT_BEARER}",
+            "Content-Type": "application/json",
+            "Accept": "*/*",
+            "X-Platform": "iOS",
+            "X-Client-Bundle-ID": "com.locket.Locket",
+        }
+        resp = _get_with_proxy(url, headers=headers, timeout=20)
+        if resp.ok:
+            try:
+                return resp.json()
+            except Exception as e:
+                raise Exception(f"Gold check unavailable: bad JSON {e}")
+        if resp.status_code == 404:
+            return {"subscriber": {"entitlements": {}}}
+        raise Exception(
+            f"Gold check unavailable: HTTP {resp.status_code}: {resp.text[:200]}"
+        )
+
     def restorePurchase(self, uid):
         """Restores the purchase using the provided token.
 
@@ -142,7 +214,7 @@ class LocketAPI:
 
             headers = {
                 "Host": "api.revenuecat.com",
-                "Authorization": "Bearer appl_***REDACTED***",
+                "Authorization": f"Bearer {os.getenv('REVENUECAT_PUBLIC_KEY', 'appl_***REDACTED***')}",
                 "Content-Type": "application/json",
                 "Accept": "*/*",
                 "X-Platform": "iOS",
@@ -194,7 +266,7 @@ class LocketAPI:
 
             headers = {
                 "X-Is-Sandbox": "true",
-                "Authorization": "Bearer appl_***REDACTED***",
+                "Authorization": f"Bearer {os.getenv('REVENUECAT_PUBLIC_KEY', 'appl_***REDACTED***')}",
                 "Connection": "keep-alive",
                 "Content-Type": "application/json",
             }

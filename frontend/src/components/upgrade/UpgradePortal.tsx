@@ -14,7 +14,7 @@ import {
   ShieldCheck,
   Check,
 } from 'lucide-react';
-import { fetchUserInfo, requestRestore } from '../../api/endpoints';
+import { fetchUserInfo, requestRestore, fetchGoldCheck } from '../../api/endpoints';
 import { extractUsername, isValidUsername } from '../../utils/username';
 import type { DevicePlatform, UserInfoData } from '../../types/api';
 import { useAuth } from '../../hooks/useAuth';
@@ -90,6 +90,16 @@ export const UpgradePortal: React.FC<UpgradePortalProps> = ({ onStartQueue, isBa
     setSubmitError(null);
 
     try {
+      // Precheck Gold truoc khi dua vao hang doi: chan acc da Gold / da tung dang ky.
+      const gold = await fetchGoldCheck(userInfo.username);
+      if (!gold.success || gold.blocked || gold.error === 'gold_check_unavailable') {
+        setSubmitError(
+          gold.error === 'gold_check_unavailable'
+            ? 'Không kiểm tra được Gold lúc này. Vui lòng đổi gói mới.'
+            : 'Tài khoản đã mua/dùng Gold — gói này chỉ cho người chưa từng đăng ký. Vui lòng đổi gói mới.'
+        );
+        return;
+      }
       const res = await requestRestore(userInfo.username, platform);
       if (res.success && res.client_id) {
         onStartQueue(
@@ -108,6 +118,8 @@ export const UpgradePortal: React.FC<UpgradePortalProps> = ({ onStartQueue, isBa
         setSubmitError('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.');
       } else if (err.status === 403) {
         setSubmitError('Yêu cầu bảo mật CSRF không hợp lệ. Vui lòng tải lại trang.');
+      } else if (err.status === 409) {
+        setSubmitError(err.message || 'Tài khoản đã mua/dùng Gold — gói này chỉ cho người chưa từng đăng ký. Vui lòng đổi gói mới.');
       } else if (err.status === 503) {
         setSubmitError('Hàng đợi hiện đang đầy (tối đa 500 yêu cầu). Vui lòng thử lại sau ít phút.');
       } else {
