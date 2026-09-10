@@ -195,6 +195,91 @@ def _maintenance_json_response():
     }), 503
 
 
+GOLD_BLOCK_MSG = (
+    "Tài khoản đã mua/dùng Gold — gói này chỉ cho người chưa từng đăng ký. "
+    "Vui lòng đổi gói mới."
+)
+GOLD_UNAVAILABLE_MSG = (
+    "Không kiểm tra được Gold lúc này. Vui lòng đổi gói mới."
+)
+
+
+def _resolve_locket_uid_for_check(raw):
+    from ..user_resolver import resolve_locket_uid
+    uid = resolve_locket_uid(raw)
+    if uid:
+        return uid
+    try:
+        info = current_app.queue_manager.call_round_robin("getUserByUsername", raw)
+        uid = (info.get("result", {}).get("data") or {}).get("uid")
+    except Exception:
+        uid = None
+    return uid
+
+
+def _live_gold_status(uid):
+    """Read-only live Gold check. Raises on failure (callers fail closed)."""
+    from ..queue_manager import SUBSCRIPTION_IDS
+    slot = current_app.rotator.list_ids()[0]
+    api = current_app.rotator.get(slot)
+    sub = api.getSubscriber(uid)
+    ent = (sub.get("subscriber", {}).get("entitlements", {}).get("Gold") or {})
+    pid = ent.get("product_identifier")
+    expires = ent.get("expires_date")
+    is_gold = False
+    if pid in SUBSCRIPTION_IDS:
+        is_gold = True
+    elif expires:
+        try:
+            exp_dt = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+            is_gold = exp_dt > datetime.now(timezone.utc)
+        except Exception:
+            is_gold = True
+    return is_gold, expires, pid
+
+
+def _gold_check(raw_username):
+    """Shared new-user-only precheck. Never uses restorePurchase to check."""
+    norm = db.normalize_locket_username(raw_username)
+    already, order = db.has_prior_activation_for_locket_username(norm)
+    uid = _resolve_locket_uid_for_check(raw_username)
+    is_gold, expires, pid = False, None, None
+    check = "history"
+    if uid:
+        try:
+            is_gold, expires, pid = _live_gold_status(uid)
+            check = "live"
+        except Exception:
+            return {
+                "already_registered": bool(already),
+                "order_status": (order or {}).get("status"),
+                "uid": uid, "is_gold": False,
+                "expires_date": None, "product_id": None,
+                "blocked": True, "check": "timeout",
+                "error": "gold_check_unavailable",
+            }
+    return {
+        "already_registered": bool(already),
+        "order_status": (order or {}).get("status"),
+        "uid": uid, "is_gold": is_gold,
+        "expires_date": expires, "product_id": pid,
+        "blocked": bool(is_gold or already), "check": check,
+        "error": None,
+    }
+
+
+def _gold_block_error(raw_username):
+    """Return None if purchase may proceed, else (error_code, msg). Fail-closed."""
+    result = _gold_check(raw_username)
+    if result["error"] == "gold_check_unavailable":
+        return ("gold_check_unavailable", GOLD_UNAVAILABLE_MSG)
+    if result["is_gold"]:
+        return ("already_gold_live", GOLD_BLOCK_MSG)
+    if result["already_registered"]:
+        return ("already_registered", GOLD_BLOCK_MSG)
+    return None
+
+
 @bp.route("/")
 def index():
     m = _maintenance_active()
@@ -591,6 +676,43 @@ def get_user_info():
         return jsonify({"success": False, "msg": "Đã xảy ra lỗi khi tìm kiếm tài khoản Locket."}), 500
 
 
+@bp.route("/api/check-gold", methods=["POST"])
+@access_required
+def check_gold():
+    """New-user-only precheck: history DB + live RevenueCap Gold (read-only)."""
+    blocked = _maintenance_json_response()
+    if blocked is not None:
+        return blocked
+    rotator = current_app.rotator
+    if rotator is None or rotator.size() == 0:
+        return _no_accounts_response()
+
+    data = request.get_json(silent=True) or {}
+    raw = (data.get("username") or "").strip()
+    if not raw:
+        return jsonify({"success": False, "error": "username_required"}), 400
+
+    result = _gold_check(raw)
+    if result["error"] == "gold_check_unavailable":
+        return jsonify({
+            "success": False,
+            "error": "gold_check_unavailable",
+            "msg": GOLD_UNAVAILABLE_MSG,
+            "already_registered": result["already_registered"],
+        }), 409
+    return jsonify({
+        "success": True,
+        "uid": result["uid"],
+        "is_gold": result["is_gold"],
+        "expires_date": result["expires_date"],
+        "product_id": result["product_id"],
+        "already_registered": result["already_registered"],
+        "order_status": result["order_status"],
+        "blocked": result["blocked"],
+        "check": result["check"],
+    })
+
+
 @bp.route("/api/restore", methods=["POST"])
 @access_required
 def restore_purchase():
@@ -619,6 +741,11 @@ def restore_purchase():
     username = (data.get("username") or "").strip()
     if not username:
         return jsonify({"success": False, "msg": "Username is required"}), 400
+
+    gold_block = _gold_block_error(username)
+    if gold_block is not None:
+        code, msg = gold_block
+        return jsonify({"success": False, "error": code, "msg": msg}), 409
 
     user_id = g.current_user["id"]
 
@@ -1005,6 +1132,12 @@ def create_plan_payment():
     )
     if validation_error:
         return validation_error
+
+    if username:
+        gold_block = _gold_block_error(username)
+        if gold_block is not None:
+            code, msg = gold_block
+            return jsonify({"success": False, "error": code, "msg": msg}), 409
 
     user_id = g.current_user["id"]
     idempotency_key = str(body.get("idempotency_key") or "").strip()
@@ -1700,6 +1833,12 @@ def purchase_plan_coin():
     )
     if fulfillment_error:
         return fulfillment_error
+
+    if username:
+        gold_block = _gold_block_error(username)
+        if gold_block is not None:
+            code, msg = gold_block
+            return jsonify({"success": False, "error": code, "msg": msg}), 409
 
     user_id = g.current_user["id"]
     price_coin = plan["price_coin"]

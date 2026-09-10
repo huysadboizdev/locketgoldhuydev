@@ -3109,6 +3109,43 @@ def get_activation_order_by_id(order_id, user_id=None):
 get_activation_order = get_activation_order_by_id
 
 
+def normalize_locket_username(raw):
+    if not raw:
+        return ""
+    s = str(raw).strip()
+    if s.startswith("@"):
+        s = s[1:]
+    if "locket.cam/" in s:
+        s = s.split("locket.cam/")[-1].split("?")[0].strip("/")
+    elif "locket.camera/links/" in s:
+        s = s.split("locket.camera/links/")[-1].split("?")[0].strip("/")
+    return s.strip().lower()
+
+
+def has_prior_activation_for_locket_username(username):
+    if not username or not str(username).strip():
+        return (False, None)
+    key = str(username).strip().lower()
+    conn = get_conn()
+    row = conn.execute(
+        """SELECT id, status, locket_username, created_at FROM activation_orders
+           WHERE LOWER(locket_username)=? AND status IN ('paid','awaiting_queue','queued','processing','completed')
+           ORDER BY id DESC LIMIT 1""",
+        (key,),
+    ).fetchone()
+    if row:
+        return (True, dict(row))
+    q = conn.execute(
+        """SELECT client_id, status FROM queue_requests
+           WHERE LOWER(username)=? AND status IN ('waiting','processing','completed')
+           ORDER BY added_at DESC LIMIT 1""",
+        (key,),
+    ).fetchone()
+    if q:
+        return (True, {"queue_client_id": q["client_id"], "status": q["status"]})
+    return (False, None)
+
+
 def get_activation_order_by_payment_code(payment_code):
     if not payment_code:
         return None
