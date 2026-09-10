@@ -1,4 +1,5 @@
 import json
+import os
 import requests
 import time
 import random
@@ -144,9 +145,10 @@ class LocketAPI:
         """
         if not uid:
             raise ValueError("UID is required")
+        _REVENUECAT_BEARER = os.getenv("REVENUECAT_PUBLIC_KEY", "appl_***REDACTED***")
         url = f"https://api.revenuecat.com/v1/subscribers/{uid}"
         headers = {
-            "Authorization": "Bearer appl_***REDACTED***",
+            "Authorization": f"Bearer {_REVENUECAT_BEARER}",
             "Content-Type": "application/json",
             "Accept": "*/*",
             "X-Platform": "iOS",
@@ -212,7 +214,7 @@ class LocketAPI:
 
             headers = {
                 "Host": "api.revenuecat.com",
-                "Authorization": "Bearer appl_***REDACTED***",
+                "Authorization": f"Bearer {os.getenv('REVENUECAT_PUBLIC_KEY', 'appl_***REDACTED***')}",
                 "Content-Type": "application/json",
                 "Accept": "*/*",
                 "X-Platform": "iOS",
@@ -264,7 +266,7 @@ class LocketAPI:
 
             headers = {
                 "X-Is-Sandbox": "true",
-                "Authorization": "Bearer appl_***REDACTED***",
+                "Authorization": f"Bearer {os.getenv('REVENUECAT_PUBLIC_KEY', 'appl_***REDACTED***')}",
                 "Connection": "keep-alive",
                 "Content-Type": "application/json",
             }

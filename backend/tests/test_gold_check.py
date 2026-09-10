@@ -275,6 +275,58 @@ class GoldCheckTestCase(unittest.TestCase):
         self.assertEqual(res.status_code, 409)
         self.assertEqual(res.get_json()["error"], "already_gold_live")
 
+    def test_check_gold_cache_hit_returns_cached_result(self):
+        """Verify gold check cache stores and retrieves results correctly."""
+        from locket.public.routes import _get_cached_gold_check, _set_cached_gold_check, _gold_check, _GOLD_CACHE
+        _GOLD_CACHE.clear()
+
+        username = f"cache_user_{int(time.time()*1000)}"
+        self._mock_live(uid=None)  # Returns NO_GOLD_SUB for this user
+
+        # Simulate what the endpoint does: compute result, cache it
+        result = _gold_check(username)
+        _set_cached_gold_check(username, result)
+
+        # Verify cache was populated via internal function
+        self.assertIn(username, _GOLD_CACHE)
+        cached_ts, cached_result = _GOLD_CACHE[username]
+        self.assertFalse(cached_result["is_gold"])
+
+        # Verify cache retrieval works
+        retrieved = _get_cached_gold_check(username)
+        self.assertIsNotNone(retrieved)
+        self.assertEqual(retrieved["is_gold"], result["is_gold"])
+
+        # Verify cache expires
+        import time as _time
+        old_ts = cached_ts
+        _GOLD_CACHE[username] = (old_ts - 301, cached_result)  # expired
+        expired = _get_cached_gold_check(username)
+        self.assertIsNone(expired)  # should return None after expiry
+
+    def test_check_gold_timeout_not_cached(self):
+        """Timeout/error results should NOT be cached (fail-closed)."""
+        from locket.public.routes import _GOLD_CACHE
+        _GOLD_CACHE.clear()
+
+        # Mock live gold check to raise an exception (timeout)
+        def mock_subscriber(uid):
+            raise Exception("Gold check unavailable: timeout")
+
+        self._mock_live(side_effect=mock_subscriber)
+
+        username = f"timeout_user_{int(time.time()*1000)}"
+        res = self.client.post(
+            "/api/check-gold",
+            json={"username": username},
+            headers=self.headers,
+        )
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.get_json()["error"], "gold_check_unavailable")
+
+        # Verify cache is empty for this username (timeout should NOT be cached)
+        self.assertNotIn(username, _GOLD_CACHE)
+
 
 if __name__ == "__main__":
     unittest.main()
