@@ -2862,20 +2862,21 @@ def purchase_plan_with_coin_atomic(user_id, plan_id, platform, fulfillment_mode,
             conn.execute("ROLLBACK")
             return ("error", "fulfillment_mode_mismatch")
 
-        # Defense-in-depth: reject purchase if this Locket username already has a
-        # completed/paid activation order in the same transaction to prevent race
-        # conditions where two concurrent purchases pass the route-level check.
+        # Defense-in-depth: reject purchase if this Locket username already has an
+        # IN-FLIGHT activation order (prevents race where two concurrent purchases
+        # pass the route-level check). Completed/failed/cancelled orders are allowed
+        # for renewal (but will still be blocked by _gold_block_error if live Gold).
         if locket_username and str(locket_username).strip():
             key = str(locket_username).strip().lower()
             prior = conn.execute(
                 """SELECT id, status FROM activation_orders
-                   WHERE LOWER(locket_username)=? AND status IN ('paid','awaiting_queue','queued','processing','completed')
+                   WHERE LOWER(locket_username)=? AND status IN ('paid','awaiting_queue','queued','processing')
                    ORDER BY id DESC LIMIT 1""",
                 (key,),
             ).fetchone()
             if prior:
                 conn.execute("ROLLBACK")
-                return ("gold_blocked", {"error": "already_registered", "msg": "Tài khoản Locket này đã có Gold được kích hoạt."})
+                return ("gold_blocked", {"error": "duplicate_in_progress", "msg": "Đơn của tài khoản này đang được xử lý."})
 
         # Normalize the requested code before the idempotency lookup. A replay
         # must return the original order even if the coupon has since expired,
@@ -3137,14 +3138,35 @@ def normalize_locket_username(raw):
     return s.strip().lower()
 
 
+_INFLIGHT_STATUSES = ("paid", "awaiting_queue", "queued", "processing")
+_QUEUE_INFLIGHT = ("waiting", "processing", "completed")
+_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "refunded")
+
+
 def has_prior_activation_for_locket_username(username):
+    """DEPRECATED. Use has_in_flight_order_for_locket_username or
+    has_gold_history_for_locket_username instead for precise semantics.
+    Backward-compatible: returns True for any non-terminal prior order.
+    """
+    inflight, order = has_in_flight_order_for_locket_username(username)
+    history, hist_order = has_gold_history_for_locket_username(username)
+    if inflight:
+        return (True, order)
+    if history:
+        return (True, hist_order)
+    return (False, None)
+
+
+def has_in_flight_order_for_locket_username(username):
+    """Return (True, order) if user has an order/queue still being processed.
+    These are BLOCK-worthy (prevents duplicate activation)."""
     if not username or not str(username).strip():
         return (False, None)
     key = str(username).strip().lower()
     conn = get_conn()
     row = conn.execute(
         """SELECT id, status, locket_username, created_at FROM activation_orders
-           WHERE LOWER(locket_username)=? AND status IN ('paid','awaiting_queue','queued','processing','completed')
+           WHERE LOWER(locket_username)=? AND status IN ('paid','awaiting_queue','queued','processing')
            ORDER BY id DESC LIMIT 1""",
         (key,),
     ).fetchone()
@@ -3152,12 +3174,31 @@ def has_prior_activation_for_locket_username(username):
         return (True, dict(row))
     q = conn.execute(
         """SELECT client_id, status FROM queue_requests
-           WHERE LOWER(username)=? AND status IN ('waiting','processing','completed')
+           WHERE LOWER(username)=? AND status IN ('waiting','processing')
            ORDER BY added_at DESC LIMIT 1""",
         (key,),
     ).fetchone()
     if q:
         return (True, {"queue_client_id": q["client_id"], "status": q["status"]})
+    return (False, None)
+
+
+def has_gold_history_for_locket_username(username):
+    """Return (True, order) if user has a completed/past Gold order (renewal eligibility).
+    This is NOT a hard block by itself — Gold check must also confirm active entitlement.
+    """
+    if not username or not str(username).strip():
+        return (False, None)
+    key = str(username).strip().lower()
+    conn = get_conn()
+    row = conn.execute(
+        """SELECT id, status, locket_username, created_at FROM activation_orders
+           WHERE LOWER(locket_username)=? AND status IN ('completed','failed','cancelled','refunded')
+           ORDER BY id DESC LIMIT 1""",
+        (key,),
+    ).fetchone()
+    if row:
+        return (True, dict(row))
     return (False, None)
 
 

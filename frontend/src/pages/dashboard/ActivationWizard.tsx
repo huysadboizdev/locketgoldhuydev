@@ -61,19 +61,22 @@ type WizardStep = 'plan' | 'platform' | 'username' | 'contact' | 'payment' | 'co
 export const GOLD_BLOCK_POPUP_TITLE = 'Tài khoản đã dùng Gold';
 
 /**
- * Tra ve message tieng Viet (co dau) khi can block, hoac null neu cho qua.
- * Thu tu uu tien: live co Gold -> da tung mua qua shop -> timeout/fail-closed.
+ * Return Vietnamese message when purchase must be blocked, or null to allow.
+ * Block cases:
+ * - already_gold_live: user currently has active Gold → BLOCK
+ * - duplicate_in_progress: user has an in-flight order → BLOCK
+ * Allow cases:
+ * - is_renewal=true (completed/failed history) → null (allow, show renewal hint via is_renewal flag)
+ * - timeout/fail-open → null
  */
 export const getGoldBlockMessage = (gold: GoldCheckResponse): string | null => {
-  if (gold.is_gold === true) {
+  if (gold.block_reason === 'already_gold_live') {
     return `Tài khoản này đang có Gold đến ngày ${gold.expires_date || 'gần đây'}. Gói này chỉ dành cho người chưa từng đăng ký. Vui lòng đổi gói khác.`;
   }
-  if (!gold.is_gold && gold.already_registered === true) {
-    return `Tài khoản này đã từng mua Gold trên hệ thống${gold.order_status ? ` (đơn ${gold.order_status})` : ''}. Gói này chỉ dành cho người mới. Vui lòng đổi gói khác.`;
+  if (gold.block_reason === 'duplicate_in_progress') {
+    return 'Đơn của tài khoản này đang được xử lý. Vui lòng chờ hoàn tất hoặc liên hệ admin.';
   }
-  if (!gold.success || gold.error === 'gold_check_unavailable' || gold.blocked) {
-    return 'Không kiểm tra được Gold lúc này. Vui lòng đổi gói khác hoặc thử lại sau.';
-  }
+  // is_renewal=true or timeout → ALLOW purchase
   return null;
 };
 
@@ -281,7 +284,8 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
         try {
           gold = await fetchGoldCheck(raw);
         } catch {
-          gold = { success: false, is_gold: false, already_registered: false, blocked: true, error: 'gold_check_unavailable' };
+          // Fail-open: API unreachable → allow purchase (treat as new user)
+          gold = { success: true, is_gold: false, already_registered: false, blocked: false, error: null, is_renewal: false };
         }
         const blockMessage = getGoldBlockMessage(gold);
         if (blockMessage) {

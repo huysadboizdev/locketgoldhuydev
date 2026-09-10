@@ -578,5 +578,7 @@ export interface GoldCheckResponse {
   blocked: boolean;
   check?: string;
   msg?: string;
-  error?: string;
+  error?: string | null;
+  block_reason?: 'already_gold_live' | 'duplicate_in_progress' | null;
+  is_renewal?: boolean;
 }

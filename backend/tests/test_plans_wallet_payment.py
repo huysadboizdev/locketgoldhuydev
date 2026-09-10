@@ -3,6 +3,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 temp_db_fd, temp_db_path = tempfile.mkstemp(suffix=".db")
 os.close(temp_db_fd)
@@ -851,10 +852,10 @@ class PlansWalletPaymentTestCase(unittest.TestCase):
         self.assertEqual(st_bad, "invalid_transition")
 
     # -------------------------------------------------------------
-    # 31. Gold block cho apk_download và manual_contact (NEW)
+    # 31. Gold block cho in-flight orders (paid/queued/processing)
     # -------------------------------------------------------------
-    def test_31_gold_block_prevents_repurchase_for_all_fulfillment_modes(self):
-        """User with prior completed Gold activation cannot repurchase via apk_download or manual_contact modes."""
+    def test_31_gold_block_prevents_in_flight_duplicate(self):
+        """User with in-flight (paid) Gold activation cannot duplicate purchase."""
         from locket import db as dbmod
         dbmod.close_conn()
         dbmod.init()
@@ -879,42 +880,43 @@ class PlansWalletPaymentTestCase(unittest.TestCase):
         
         target_username = "goldblocktest_user"
         
-        # 1. Create a completed activation order for this username (simulating prior Gold)
+        # 1. Create a PAID activation order for this username (in-flight)
+        # Use user_id=1 (admin exists). Use initial_status="paid" to force in-flight state.
         prior_order_id = dbmod.create_activation_order(
-            user_id=2,  # Different user_id to simulate prior owner
+            user_id=1,
             plan_id=plan_id,
             target_username=target_username,
             platform="android",
             payment_method="coin",
             paid_amount_coin=20,
+            initial_status="paid",  # Force in-flight (apk_download default = completed)
         )
-        # Mark it as completed
-        dbmod.update_activation_order_status(prior_order_id, "completed")
         
         csrf_res = self.client.get("/api/auth/csrf")
         self.csrf_token = csrf_res.get_json()["csrf_token"]
         self.headers_user1["X-CSRF-Token"] = self.csrf_token
         
-        # 2. Try to buy apk_download plan for SAME username (already has Gold)
-        res = self.client.post(
-            "/api/orders/coin",
-            json={
-                "plan_id": plan_id,
-                "platform": "android",
-                "username": target_username,
-                "idempotency_key": f"test-{int(time.time()*1000)}",
-            },
-            headers=self.headers_user1,
-        )
-        # Should be blocked with 409
+        # 2. Try to buy apk_download plan for SAME username (has in-flight order)
+        # Mock _gold_block_error to pass through (return None); DB defense-in-depth catches the duplicate
+        with patch("locket.public.routes._gold_block_error", return_value=None):
+            res = self.client.post(
+                "/api/orders/coin",
+                json={
+                    "plan_id": plan_id,
+                    "platform": "android",
+                    "username": target_username,
+                    "idempotency_key": f"test-{int(time.time()*1000)}",
+                },
+                headers=self.headers_user1,
+            )
+        # Should be blocked with 409 duplicate_in_progress
         self.assertIn(res.status_code, [409, 400])
         if res.status_code == 409:
             data = res.get_json()
             self.assertIn("error", data)
-            self.assertIn(data["error"], ["already_registered", "already_gold_live"])
+            self.assertEqual(data["error"], "duplicate_in_progress")
         
         # 3. Try with manual_contact mode - simulate by setting android to manual_contact
-        # First set android fulfillment mode for this plan
         conn = dbmod.get_conn()
         conn.execute("UPDATE plans SET android_fulfillment_mode = ? WHERE id = ?", ("manual_contact", plan_id))
         
@@ -922,23 +924,80 @@ class PlansWalletPaymentTestCase(unittest.TestCase):
         self.csrf_token = csrf_res.get_json()["csrf_token"]
         self.headers_user1["X-CSRF-Token"] = self.csrf_token
         
-        res2 = self.client.post(
-            "/api/orders/coin",
-            json={
-                "plan_id": plan_id,
-                "platform": "android",
-                "username": target_username,  # Same username
-                "contact_zalo": "0909090909",
-                "contact_facebook": "https://facebook.com/test",
-                "idempotency_key": f"test2-{int(time.time()*1000)}",
-            },
-            headers=self.headers_user1,
-        )
-        # Should also be blocked
+        # Mock _gold_block_error to pass through; DB defense-in-depth catches duplicate
+        with patch("locket.public.routes._gold_block_error", return_value=None):
+            res2 = self.client.post(
+                "/api/orders/coin",
+                json={
+                    "plan_id": plan_id,
+                    "platform": "android",
+                    "username": target_username,  # Same username
+                    "contact_zalo": "0909090909",
+                    "contact_facebook": "https://facebook.com/test",
+                    "idempotency_key": f"test2-{int(time.time()*1000)}",
+                },
+                headers=self.headers_user1,
+            )
+        # Should also be blocked with duplicate_in_progress
         self.assertIn(res2.status_code, [409, 400])
         if res2.status_code == 409:
             data2 = res2.get_json()
             self.assertIn("error", data2)
+            self.assertEqual(data2["error"], "duplicate_in_progress")
+
+    # -------------------------------------------------------------
+    # 31b. Completed order → ALLOW renewal (new behavior)
+    # -------------------------------------------------------------
+    def test_31b_completed_order_allows_renewal(self):
+        """User with completed Gold activation CAN purchase renewal."""
+        from locket import db as dbmod
+        dbmod.close_conn()
+        dbmod.init()
+        
+        plan_id = dbmod.create_plan(
+            name="Gold Không VPN Test Renewal",
+            slug=f"gold_novpn_renewal_{int(time.time()*1000)}",
+            platform="all",
+            price_coin=20,
+            price_vnd=20000,
+            duration_days=365,
+            is_active=1,
+            stock_limit=-1,
+        )
+        
+        dbmod.apply_wallet_transaction(1, "topup", 100, "test_topup", 999, "test")
+        
+        target_username = "renewal_user"
+        
+        # 1. Create a COMPLETED activation order (terminal)
+        prior_order_id = dbmod.create_activation_order(
+            user_id=2,
+            plan_id=plan_id,
+            target_username=target_username,
+            platform="android",
+            payment_method="coin",
+            paid_amount_coin=20,
+        )
+        dbmod.update_activation_order_status(prior_order_id, "completed")
+        
+        csrf_res = self.client.get("/api/auth/csrf")
+        self.csrf_token = csrf_res.get_json()["csrf_token"]
+        self.headers_user1["X-CSRF-Token"] = self.csrf_token
+        
+        # 2. Should be ALLOWED to purchase renewal
+        res = self.client.post(
+            "/api/orders/coin",
+            json={
+                "plan_id": plan_id,
+                "platform": "android",
+                "username": target_username,
+                "idempotency_key": f"renewal-{int(time.time()*1000)}",
+            },
+            headers=self.headers_user1,
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data.get("success"))
 
     # -------------------------------------------------------------
     # 32. User chưa có Gold có thể mua bình thường (regression check)
