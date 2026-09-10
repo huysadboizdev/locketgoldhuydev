@@ -255,7 +255,7 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
       const res = await fetchUserInfo(raw);
       if (res && res.success && res.data) {
         const gold = await fetchGoldCheck(raw);
-        if (!gold.success || gold.blocked || (gold as any).error === 'gold_check_unavailable') {
+        if (!gold.success || gold.blocked || gold.error === 'gold_check_unavailable') {
           setUserVerifyError('Tai khoan nay da mua/dung Gold hoac khong kiem tra duoc — goi nay chi cho nguoi chua tung dang ky. Vui long doi goi moi.');
           setUserInfo(null);
           return;
