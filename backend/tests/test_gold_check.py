@@ -170,13 +170,16 @@ class GoldCheckTestCase(unittest.TestCase):
         self.assertTrue(data["blocked"])
         self.assertEqual(data["check"], "live")
 
-    def test_check_gold_timeout_fail_closed_409(self):
+    def test_check_gold_timeout_fail_open_for_new_user(self):
+        """New user + RevenueCat timeout → ALLOW purchase (fail-open)."""
         self._mock_live(side_effect=Exception("Gold check unavailable: timeout"))
         res = self.client.post(
             "/api/check-gold", json={"username": "newuser"}, headers=self.headers
         )
-        self.assertEqual(res.status_code, 409)
-        self.assertEqual(res.get_json()["error"], "gold_check_unavailable")
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertFalse(data["blocked"])
+        self.assertEqual(data["check"], "timeout")
 
     def test_check_gold_allows_new_user(self):
         self._mock_live(sub_result=NO_GOLD_SUB)
@@ -242,15 +245,16 @@ class GoldCheckTestCase(unittest.TestCase):
         self.assertEqual(res.status_code, 409)
         self.assertEqual(res.get_json()["error"], "already_gold_live")
 
-    def test_restore_timeout_fail_closed_409(self):
+    def test_restore_timeout_fail_open_for_new_user(self):
+        """New user + RevenueCat timeout → ALLOW restore (fail-open)."""
         self._mock_live(side_effect=Exception("Gold check unavailable: timeout"))
         res = self.client.post(
             "/api/restore",
             json={"username": "unknownlive", "platform": "ios"},
             headers=self.headers,
         )
-        self.assertEqual(res.status_code, 409)
-        self.assertEqual(res.get_json()["error"], "gold_check_unavailable")
+        # ✅ Fail-open: new user with timeout should be allowed (queued or 503)
+        self.assertIn(res.status_code, [200, 503])
 
     def test_plan_payment_blocked_for_prior_order_409(self):
         _insert_activation_order("planrepeat", status="paid")
@@ -305,7 +309,7 @@ class GoldCheckTestCase(unittest.TestCase):
         self.assertIsNone(expired)  # should return None after expiry
 
     def test_check_gold_timeout_not_cached(self):
-        """Timeout/error results should NOT be cached (fail-closed)."""
+        """Timeout/error results should NOT be cached (fail-open for new user)."""
         from locket.public.routes import _GOLD_CACHE
         _GOLD_CACHE.clear()
 
@@ -321,8 +325,8 @@ class GoldCheckTestCase(unittest.TestCase):
             json={"username": username},
             headers=self.headers,
         )
-        self.assertEqual(res.status_code, 409)
-        self.assertEqual(res.get_json()["error"], "gold_check_unavailable")
+        self.assertEqual(res.status_code, 200)  # ✅ fail-open for new user
+        self.assertFalse(res.get_json()["blocked"])
 
         # Verify cache is empty for this username (timeout should NOT be cached)
         self.assertNotIn(username, _GOLD_CACHE)

@@ -230,9 +230,6 @@ GOLD_BLOCK_MSG = (
     "Tài khoản đã mua/dùng Gold — gói này chỉ cho người chưa từng đăng ký. "
     "Vui lòng đổi gói mới."
 )
-GOLD_UNAVAILABLE_MSG = (
-    "Không kiểm tra được Gold lúc này. Vui lòng đổi gói mới."
-)
 
 
 def _resolve_locket_uid_for_check(raw):
@@ -270,40 +267,69 @@ def _live_gold_status(uid):
 
 
 def _gold_check(raw_username):
-    """Shared new-user-only precheck. Never uses restorePurchase to check."""
+    """Shared new-user-only precheck. Never uses restorePurchase to check.
+    
+    Security policy:
+    - User WITH history (already_registered=True) → BLOCK 100% (fail-closed)
+    - User WITH live Gold (is_gold=True) → BLOCK 100% (fail-closed)
+    - User NEW + RevenueCat timeout → ALLOW purchase (fail-open)
+    - User NEW + no uid resolvable → ALLOW (fail-open)
+    """
     norm = db.normalize_locket_username(raw_username)
     already, order = db.has_prior_activation_for_locket_username(norm)
+    
+    # 1. CHECK HISTORY — user đã từng mua Gold qua hệ thống → BLOCK 100%
+    if already:
+        # 🚫 FAIL-CLOSED: user đã từng có Gold → chặn ngay
+        return {
+            "already_registered": True,
+            "order_status": (order or {}).get("status"),
+            "uid": None, "is_gold": False,
+            "expires_date": None, "product_id": None,
+            "blocked": True, "check": "history",
+            "error": None,
+        }
+    
+    # 2. CHECK LIVE REVENUECAT — user đang có Gold live → BLOCK 100%
     uid = _resolve_locket_uid_for_check(raw_username)
     is_gold, expires, pid = False, None, None
     check = "history"
+    
     if uid:
         try:
             is_gold, expires, pid = _live_gold_status(uid)
             check = "live"
         except Exception:
+            # RevenueCat lỗi + user CHƯA CÓ history → user mới → CHO PHÉP MUA
+            # ✅ FAIL-OPEN cho user mới
             return {
-                "already_registered": bool(already),
-                "order_status": (order or {}).get("status"),
+                "already_registered": False,
+                "order_status": None,
                 "uid": uid, "is_gold": False,
                 "expires_date": None, "product_id": None,
-                "blocked": True, "check": "timeout",
-                "error": "gold_check_unavailable",
+                "blocked": False, "check": "timeout",
+                "error": None,
             }
+    
+    # 3. Decision: block only if live check says gold, otherwise allow
     return {
         "already_registered": bool(already),
         "order_status": (order or {}).get("status"),
         "uid": uid, "is_gold": is_gold,
         "expires_date": expires, "product_id": pid,
-        "blocked": bool(is_gold or already), "check": check,
+        "blocked": bool(is_gold),  # chỉ block nếu RevenueCat xác nhận đang có Gold
+        "check": check,
         "error": None,
     }
 
 
 def _gold_block_error(raw_username):
-    """Return None if purchase may proceed, else (error_code, msg). Fail-closed."""
+    """Return None if purchase may proceed, else (error_code, msg).
+    
+    Fail-closed for known Gold users (history OR live).
+    Fail-open for new users when RevenueCat is unavailable.
+    """
     result = _gold_check(raw_username)
-    if result["error"] == "gold_check_unavailable":
-        return ("gold_check_unavailable", GOLD_UNAVAILABLE_MSG)
     if result["is_gold"]:
         return ("already_gold_live", GOLD_BLOCK_MSG)
     if result["already_registered"]:
@@ -730,17 +756,11 @@ def check_gold():
         result = cached_result
     else:
         result = _gold_check(raw)
-        # Only cache successful (non-timeout) results
-        if result.get("error") != "gold_check_unavailable" and not current_app.config.get("TESTING"):
+        # Cache only hard-block results (history or live Gold).
+        # Do NOT cache timeout/fail-open results — let new users always proceed.
+        if not current_app.config.get("TESTING") and result["blocked"]:
             _set_cached_gold_check(raw, result)
 
-    if result["error"] == "gold_check_unavailable":
-        return jsonify({
-            "success": False,
-            "error": "gold_check_unavailable",
-            "msg": GOLD_UNAVAILABLE_MSG,
-            "already_registered": result["already_registered"],
-        }), 409
     return jsonify({
         "success": True,
         "uid": result["uid"],

@@ -911,7 +911,7 @@ class PlansWalletPaymentTestCase(unittest.TestCase):
         if res.status_code == 409:
             data = res.get_json()
             self.assertIn("error", data)
-            self.assertIn(data["error"], ["already_registered", "already_gold_live", "gold_check_unavailable"])
+            self.assertIn(data["error"], ["already_registered", "already_gold_live"])
         
         # 3. Try with manual_contact mode - simulate by setting android to manual_contact
         # First set android fulfillment mode for this plan
