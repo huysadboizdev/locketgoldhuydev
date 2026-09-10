@@ -92,9 +92,9 @@ export const UpgradePortal: React.FC<UpgradePortalProps> = ({ onStartQueue, isBa
     try {
       // Precheck Gold truoc khi dua vao hang doi: chan acc da Gold / da tung dang ky.
       const gold = await fetchGoldCheck(userInfo.username);
-      if (!gold.success || gold.blocked || (gold as any).error === 'gold_check_unavailable') {
+      if (!gold.success || gold.blocked || gold.error === 'gold_check_unavailable') {
         setSubmitError(
-          (gold as any).error === 'gold_check_unavailable'
+          gold.error === 'gold_check_unavailable'
             ? 'Không kiểm tra được Gold lúc này. Vui lòng đổi gói mới.'
             : 'Tài khoản đã mua/dùng Gold — gói này chỉ cho người chưa từng đăng ký. Vui lòng đổi gói mới.'
         );
