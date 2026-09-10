@@ -147,7 +147,8 @@ class GoldCheckTestCase(unittest.TestCase):
 
     # ---- POST /api/check-gold ----
 
-    def test_check_gold_blocks_prior_completed_order(self):
+    def test_check_gold_allows_renewal_for_completed_order(self):
+        """Completed order + no live Gold → ALLOW (is_renewal=true)."""
         _insert_activation_order("testuser", status="completed")
         self._mock_live(sub_result=NO_GOLD_SUB, uid=None)
         res = self.client.post(
@@ -156,8 +157,24 @@ class GoldCheckTestCase(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
         self.assertTrue(data["success"])
+        self.assertFalse(data["blocked"])
         self.assertTrue(data["already_registered"])
         self.assertEqual(data["order_status"], "completed")
+        self.assertTrue(data["is_renewal"])
+        self.assertIsNone(data.get("block_reason"))
+
+    def test_check_gold_blocks_in_flight_paid_order(self):
+        """Paid order (in-flight) → BLOCK (duplicate_in_progress)."""
+        _insert_activation_order("testuser", status="paid")
+        self._mock_live(sub_result=NO_GOLD_SUB, uid=None)
+        res = self.client.post(
+            "/api/check-gold", json={"username": "testuser"}, headers=self.headers
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data["blocked"])
+        self.assertEqual(data["block_reason"], "duplicate_in_progress")
+        self.assertEqual(data["check"], "in_flight")
 
     def test_check_gold_live_gold_blocked(self):
         self._mock_live(sub_result=GOLD_SUB)
@@ -169,6 +186,7 @@ class GoldCheckTestCase(unittest.TestCase):
         self.assertTrue(data["is_gold"])
         self.assertTrue(data["blocked"])
         self.assertEqual(data["check"], "live")
+        self.assertEqual(data["block_reason"], "already_gold_live")
 
     def test_check_gold_timeout_fail_open_for_new_user(self):
         """New user + RevenueCat timeout → ALLOW purchase (fail-open)."""
@@ -224,8 +242,9 @@ class GoldCheckTestCase(unittest.TestCase):
 
     # ---- 409 enforcement ----
 
-    def test_restore_blocked_for_prior_order_409(self):
-        _insert_activation_order("repeatbuyer", status="completed")
+    def test_restore_blocked_for_in_flight_order_409(self):
+        """In-flight (paid) order → BLOCK (duplicate_in_progress)."""
+        _insert_activation_order("repeatbuyer", status="paid")
         self._mock_live(sub_result=NO_GOLD_SUB, uid=None)
         res = self.client.post(
             "/api/restore",
@@ -233,7 +252,18 @@ class GoldCheckTestCase(unittest.TestCase):
             headers=self.headers,
         )
         self.assertEqual(res.status_code, 409)
-        self.assertEqual(res.get_json()["error"], "already_registered")
+        self.assertEqual(res.get_json()["error"], "duplicate_in_progress")
+
+    def test_restore_allowed_for_renewal_of_completed(self):
+        """Completed order + no live Gold → ALLOW restore (renewal)."""
+        _insert_activation_order("renewal_user", status="completed")
+        self._mock_live(sub_result=NO_GOLD_SUB, uid=None)
+        res = self.client.post(
+            "/api/restore",
+            json={"username": "renewal_user", "platform": "ios"},
+            headers=self.headers,
+        )
+        self.assertEqual(res.status_code, 200)
 
     def test_restore_blocked_for_live_gold_409(self):
         self._mock_live(sub_result=GOLD_SUB)
@@ -256,7 +286,8 @@ class GoldCheckTestCase(unittest.TestCase):
         # ✅ Fail-open: new user with timeout should be allowed (queued or 503)
         self.assertIn(res.status_code, [200, 503])
 
-    def test_plan_payment_blocked_for_prior_order_409(self):
+    def test_plan_payment_blocked_for_in_flight_409(self):
+        """In-flight (paid) order → BLOCK (duplicate_in_progress)."""
         _insert_activation_order("planrepeat", status="paid")
         self._mock_live(sub_result=NO_GOLD_SUB, uid=None)
         res = self.client.post(
@@ -266,7 +297,7 @@ class GoldCheckTestCase(unittest.TestCase):
             headers=self.headers,
         )
         self.assertEqual(res.status_code, 409)
-        self.assertEqual(res.get_json()["error"], "already_registered")
+        self.assertEqual(res.get_json()["error"], "duplicate_in_progress")
 
     def test_coin_order_blocked_for_live_gold_409(self):
         self._mock_live(sub_result=GOLD_SUB)

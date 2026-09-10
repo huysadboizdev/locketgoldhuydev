@@ -230,6 +230,9 @@ GOLD_BLOCK_MSG = (
     "Tài khoản đã mua/dùng Gold — gói này chỉ cho người chưa từng đăng ký. "
     "Vui lòng đổi gói mới."
 )
+DUPLICATE_IN_PROGRESS_MSG = (
+    "Đơn của tài khoản này đang được xử lý. Vui lòng đợi hoàn tất hoặc liên hệ admin."
+)
 
 
 def _resolve_locket_uid_for_check(raw):
@@ -267,30 +270,35 @@ def _live_gold_status(uid):
 
 
 def _gold_check(raw_username):
-    """Shared new-user-only precheck. Never uses restorePurchase to check.
+    """Gold precheck with renewal support.
     
-    Security policy:
-    - User WITH history (already_registered=True) → BLOCK 100% (fail-closed)
-    - User WITH live Gold (is_gold=True) → BLOCK 100% (fail-closed)
-    - User NEW + RevenueCat timeout → ALLOW purchase (fail-open)
+    Policy:
+    - User WITH live Gold (is_gold=True) → BLOCK (already_gold_live)
+    - User WITH in-flight order (paid/queued/processing) → BLOCK (duplicate_in_progress)
+    - User WITH history (completed/failed/cancelled) + no live Gold → ALLOW (renewal)
+    - User NEW + RevenueCat timeout → ALLOW (fail-open)
     - User NEW + no uid resolvable → ALLOW (fail-open)
     """
     norm = db.normalize_locket_username(raw_username)
-    already, order = db.has_prior_activation_for_locket_username(norm)
     
-    # 1. CHECK HISTORY — user đã từng mua Gold qua hệ thống → BLOCK 100%
-    if already:
-        # 🚫 FAIL-CLOSED: user đã từng có Gold → chặn ngay
+    # 1. Check in-flight → BLOCK (prevents duplicate)
+    in_flight, inflight_order = db.has_in_flight_order_for_locket_username(norm)
+    if in_flight:
         return {
-            "already_registered": True,
-            "order_status": (order or {}).get("status"),
+            "already_registered": False,
+            "order_status": (inflight_order or {}).get("status"),
             "uid": None, "is_gold": False,
             "expires_date": None, "product_id": None,
-            "blocked": True, "check": "history",
+            "blocked": True, "check": "in_flight",
             "error": None,
+            "block_reason": "duplicate_in_progress",
+            "is_renewal": False,
         }
     
-    # 2. CHECK LIVE REVENUECAT — user đang có Gold live → BLOCK 100%
+    # 2. Check history (completed/past orders) — NOT a hard block
+    has_history, history_order = db.has_gold_history_for_locket_username(norm)
+    
+    # 3. Check live RevenueCat Gold
     uid = _resolve_locket_uid_for_check(raw_username)
     is_gold, expires, pid = False, None, None
     check = "history"
@@ -300,41 +308,66 @@ def _gold_check(raw_username):
             is_gold, expires, pid = _live_gold_status(uid)
             check = "live"
         except Exception:
-            # RevenueCat lỗi + user CHƯA CÓ history → user mới → CHO PHÉP MUA
-            # ✅ FAIL-OPEN cho user mới
+            # RevenueCat lỗi + user có history → allow renewal (fail-open)
+            # RevenueCat lỗi + user mới → allow purchase (fail-open)
             return {
-                "already_registered": False,
-                "order_status": None,
+                "already_registered": has_history,
+                "order_status": (history_order or {}).get("status"),
                 "uid": uid, "is_gold": False,
                 "expires_date": None, "product_id": None,
                 "blocked": False, "check": "timeout",
                 "error": None,
+                "block_reason": None,
+                "is_renewal": has_history,  # có history → renewal
             }
     
-    # 3. Decision: block only if live check says gold, otherwise allow
+    # 4. Live Gold check — BLOCK if is_gold
+    if is_gold:
+        return {
+            "already_registered": has_history,
+            "order_status": (history_order or {}).get("status"),
+            "uid": uid, "is_gold": is_gold,
+            "expires_date": expires, "product_id": pid,
+            "blocked": True, "check": check,
+            "error": None,
+            "block_reason": "already_gold_live",
+            "is_renewal": False,
+        }
+    
+    # 5. Allow purchase (new user OR renewal)
     return {
-        "already_registered": bool(already),
-        "order_status": (order or {}).get("status"),
+        "already_registered": has_history,
+        "order_status": (history_order or {}).get("status"),
         "uid": uid, "is_gold": is_gold,
         "expires_date": expires, "product_id": pid,
-        "blocked": bool(is_gold),  # chỉ block nếu RevenueCat xác nhận đang có Gold
-        "check": check,
+        "blocked": False, "check": check,
         "error": None,
+        "block_reason": None,
+        "is_renewal": has_history,
     }
 
 
 def _gold_block_error(raw_username):
     """Return None if purchase may proceed, else (error_code, msg).
     
-    Fail-closed for known Gold users (history OR live).
-    Fail-open for new users when RevenueCat is unavailable.
+    Fail-closed for:
+    - User WITH live Gold (already_gold_live)
+    - User WITH in-flight order (duplicate_in_progress)
+    Fail-open for:
+    - User with history (completed/failed) but NO live Gold → allow renewal
+    - User NEW + RevenueCat timeout → allow purchase
     """
     result = _gold_check(raw_username)
-    if result["is_gold"]:
+    if not result["blocked"]:
+        return None
+    
+    reason = result.get("block_reason", None)
+    if reason == "already_gold_live":
         return ("already_gold_live", GOLD_BLOCK_MSG)
-    if result["already_registered"]:
-        return ("already_registered", GOLD_BLOCK_MSG)
-    return None
+    if reason == "duplicate_in_progress":
+        return ("duplicate_in_progress", DUPLICATE_IN_PROGRESS_MSG)
+    # Fallback for any unexpected block_reason
+    return ("already_gold_live", GOLD_BLOCK_MSG)
 
 
 @bp.route("/")
@@ -771,6 +804,8 @@ def check_gold():
         "order_status": result["order_status"],
         "blocked": result["blocked"],
         "check": result["check"],
+        "is_renewal": result["is_renewal"],
+        "block_reason": result.get("block_reason"),
     })
 
 

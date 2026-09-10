@@ -15,6 +15,7 @@ import {
   Check,
 } from 'lucide-react';
 import { fetchUserInfo, requestRestore, fetchGoldCheck } from '../../api/endpoints';
+import { getGoldBlockMessage } from '../../pages/dashboard/ActivationWizard';
 import { extractUsername, isValidUsername } from '../../utils/username';
 import type { DevicePlatform, UserInfoData } from '../../types/api';
 import { useAuth } from '../../hooks/useAuth';
@@ -90,14 +91,11 @@ export const UpgradePortal: React.FC<UpgradePortalProps> = ({ onStartQueue, isBa
     setSubmitError(null);
 
     try {
-      // Precheck Gold truoc khi dua vao hang doi: chan acc da Gold / da tung dang ky.
+      // Precheck Gold before queuing: block only live Gold or in-flight order
       const gold = await fetchGoldCheck(userInfo.username);
-      if (!gold.success || gold.blocked || gold.error === 'gold_check_unavailable') {
-        setSubmitError(
-          gold.error === 'gold_check_unavailable'
-            ? 'Không kiểm tra được Gold lúc này. Vui lòng đổi gói mới.'
-            : 'Tài khoản đã mua/dùng Gold — gói này chỉ cho người chưa từng đăng ký. Vui lòng đổi gói mới.'
-        );
+      const blockMessage = getGoldBlockMessage(gold);
+      if (blockMessage) {
+        setSubmitError(blockMessage);
         return;
       }
       const res = await requestRestore(userInfo.username, platform);

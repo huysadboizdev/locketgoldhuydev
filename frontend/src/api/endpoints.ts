@@ -448,8 +448,9 @@ export async function fetchGoldCheck(username: string): Promise<GoldCheckRespons
     body: JSON.stringify({ username }),
   });
 
-  // Cache successful results only
-  if (typeof window !== 'undefined' && window.localStorage && !res.error) {
+  // Cache hard-block results only (live Gold or in-flight order).
+  // Do NOT cache fail-open (timeout/new user) — let new users always proceed.
+  if (typeof window !== 'undefined' && window.localStorage && !res.error && res.blocked) {
     try {
       window.localStorage.setItem(cacheKey, JSON.stringify({
         data: res,
