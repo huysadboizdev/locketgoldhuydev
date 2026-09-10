@@ -27,6 +27,7 @@ import type {
   CoinPurchaseResponse,
   PlatformConfigResponse,
   ValidateCouponResponse,
+  GoldCheckResponse,
 } from '../types/api';
 
 
@@ -416,5 +417,15 @@ export async function fetchOrderDetail(orderId: number): Promise<OrderDetailResp
 export async function fetchPlatformConfig(): Promise<PlatformConfigResponse> {
   return apiClient<PlatformConfigResponse>('/api/platform-config', {
     method: 'GET',
+  });
+}
+
+/**
+ * Kiểm tra Gold/precheck trước khi cho phép mua gói new-user-only
+ */
+export async function fetchGoldCheck(username: string): Promise<GoldCheckResponse> {
+  return apiClient<GoldCheckResponse>('/api/check-gold', {
+    method: 'POST',
+    body: JSON.stringify({ username }),
   });
 }

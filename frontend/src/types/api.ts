@@ -566,3 +566,17 @@ export interface PlatformConfigResponse {
   mobileconfig_available: boolean;
   bank_configured: boolean;
 }
+
+export interface GoldCheckResponse {
+  success: boolean;
+  uid?: string | null;
+  is_gold: boolean;
+  expires_date?: string | null;
+  product_id?: string | null;
+  already_registered: boolean;
+  order_status?: string | null;
+  blocked: boolean;
+  check?: string;
+  msg?: string;
+  error?: string;
+}
