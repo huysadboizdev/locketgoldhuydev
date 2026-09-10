@@ -17,6 +17,36 @@ from ..user_auth import validate_csrf
 from . import bp
 
 
+# --- Gold check cache (in-memory, 5-minute TTL) ---
+# Reduces load on RevenueCat API and prevents rate limiting / transient failures
+# from blocking legitimate new-user purchases. This is a backend performance
+# cache only; it does NOT override RevenueCat's authoritative subscription state.
+_GOLD_CACHE = {}
+_GOLD_CACHE_TTL = 300  # 5 minutes
+
+
+def _get_cached_gold_check(raw_username):
+    """Return cached gold check result if fresh, else None."""
+    cache_key = raw_username.strip().lower()
+    cached = _GOLD_CACHE.get(cache_key)
+    if cached is None:
+        return None
+    ts, result = cached
+    if (time.time() - ts) < _GOLD_CACHE_TTL:
+        return result
+    del _GOLD_CACHE[cache_key]
+    return None
+
+
+def _set_cached_gold_check(raw_username, result):
+    """Store a gold check result in cache."""
+    cache_key = raw_username.strip().lower()
+    _GOLD_CACHE[cache_key] = (time.time(), result)
+
+
+# --- End Gold cache ---
+
+
 def _mobileconfig_path():
     env_path = os.getenv("MOBILECONFIG_PATH")
     if env_path:
@@ -131,9 +161,10 @@ def _validate_fulfillment_payload(plan, platform, body):
                 "success": False, "error": "invalid_contact_facebook",
                 "msg": "Vui lòng nhập liên kết Facebook HTTPS hợp lệ.",
             }), 400)
-        username = ""
+        # Keep username from body for gold check - don't clear it
     elif mode == "apk_download":
-        username = ""
+        # Keep username from body for gold check
+        pass
     return mode, username, zalo, facebook, None
 
 
@@ -692,7 +723,17 @@ def check_gold():
     if not raw:
         return jsonify({"success": False, "error": "username_required"}), 400
 
-    result = _gold_check(raw)
+    # Try cache first to avoid hitting RevenueCat on every request
+    # Skip cache in TESTING mode to avoid cross-test contamination
+    cached_result = _get_cached_gold_check(raw) if not current_app.config.get("TESTING") else None
+    if cached_result is not None:
+        result = cached_result
+    else:
+        result = _gold_check(raw)
+        # Only cache successful (non-timeout) results
+        if result.get("error") != "gold_check_unavailable" and not current_app.config.get("TESTING"):
+            _set_cached_gold_check(raw, result)
+
     if result["error"] == "gold_check_unavailable":
         return jsonify({
             "success": False,
@@ -1198,11 +1239,10 @@ def create_plan_payment():
                 "msg": "Khóa xử lý trùng lặp nhưng nội dung yêu cầu khác nhau.",
             }), 409
 
-    if username:
-        gold_block = _gold_block_error(username)
-        if gold_block is not None:
-            code, msg = gold_block
-            return jsonify({"success": False, "error": code, "msg": msg}), 409
+    gold_block = _gold_block_error(username)
+    if gold_block is not None:
+        code, msg = gold_block
+        return jsonify({"success": False, "error": code, "msg": msg}), 409
 
     conn = db.get_conn()
     now = time.time()
@@ -1894,11 +1934,10 @@ def purchase_plan_coin():
                     }), 409
 
     if tx_status is None:
-        if username:
-            gold_block = _gold_block_error(username)
-            if gold_block is not None:
-                code, msg = gold_block
-                return jsonify({"success": False, "error": code, "msg": msg}), 409
+        gold_block = _gold_block_error(username)
+        if gold_block is not None:
+            code, msg = gold_block
+            return jsonify({"success": False, "error": code, "msg": msg}), 409
 
         idempotency_key = client_idem or f"coin_order_{user_id}_{plan_id}_{secrets.token_hex(12)}"
         tx_status, tx_res = db.purchase_plan_with_coin_atomic(
@@ -1927,6 +1966,13 @@ def purchase_plan_coin():
             **tx_res,
             "msg": "Số dư Coin không đủ.",
         }), 400
+    if tx_status == "gold_blocked":
+        return jsonify({
+            "success": False,
+            "error": tx_res.get("error", "already_registered"),
+            "msg": tx_res.get("msg", "Tài khoản đã có Gold."),
+            "blocked": True,
+        }), 409
     if tx_status == "idempotency_conflict":
         return jsonify({
             "success": False,

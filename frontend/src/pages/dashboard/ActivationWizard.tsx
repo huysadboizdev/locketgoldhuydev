@@ -11,6 +11,7 @@ import {
 import {
   fetchUserInfo,
   fetchGoldCheck,
+  clearGoldCheckCache,
   purchasePlanWithCoin,
   createPlanPayment,
   validateCoupon,
@@ -438,6 +439,8 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
         setQueueStatus(res.status === 'queued' ? 'waiting' : res.status);
         setCurrentStep('completed');
         onRefreshWallet();
+        // Clear gold check cache so backend re-checks on next access
+        clearGoldCheckCache(usernameInput.trim());
         if (onOrderCreated) onOrderCreated(res.activation_order_id);
       } else {
         setPaymentError(res.msg || 'Thanh toán bằng Coin thất bại.');
@@ -493,6 +496,8 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
           locket_username: usernameInput.trim(),
           platform: selectedPlatform,
         });
+        // Clear gold check cache so backend re-checks on next access
+        clearGoldCheckCache(usernameInput.trim());
       } else {
         setPaymentError(res.msg || 'Không thể tạo mã thanh toán VietQR.');
       }
@@ -502,6 +507,17 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
       setIsProcessingPayment(false);
     }
   };
+
+  // Auto create QR order when entering payment step if user chooses QR
+  useEffect(() => {
+    if (currentStep === 'payment' && paymentMethod === 'qr' && !qrOrder && !isProcessingPayment) {
+      const signature = `${selectedPlan?.id || ''}:${selectedPlatform || ''}:${fulfillmentMode || ''}:${usernameInput.trim()}:${contactZalo.trim()}:${contactFacebook.trim()}:${appliedCoupon?.code || ''}`;
+      if (lastAutoQrSignatureRef.current !== signature) {
+        lastAutoQrSignatureRef.current = signature;
+        void handleCreateQrPayment();
+      }
+    }
+  }, [currentStep, paymentMethod, appliedCoupon, qrOrder, isProcessingPayment]);
 
   // Auto create QR order when entering payment step if user chooses QR
   useEffect(() => {

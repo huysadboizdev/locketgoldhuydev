@@ -2862,6 +2862,21 @@ def purchase_plan_with_coin_atomic(user_id, plan_id, platform, fulfillment_mode,
             conn.execute("ROLLBACK")
             return ("error", "fulfillment_mode_mismatch")
 
+        # Defense-in-depth: reject purchase if this Locket username already has a
+        # completed/paid activation order in the same transaction to prevent race
+        # conditions where two concurrent purchases pass the route-level check.
+        if locket_username and str(locket_username).strip():
+            key = str(locket_username).strip().lower()
+            prior = conn.execute(
+                """SELECT id, status FROM activation_orders
+                   WHERE LOWER(locket_username)=? AND status IN ('paid','awaiting_queue','queued','processing','completed')
+                   ORDER BY id DESC LIMIT 1""",
+                (key,),
+            ).fetchone()
+            if prior:
+                conn.execute("ROLLBACK")
+                return ("gold_blocked", {"error": "already_registered", "msg": "Tài khoản Locket này đã có Gold được kích hoạt."})
+
         # Normalize the requested code before the idempotency lookup. A replay
         # must return the original order even if the coupon has since expired,
         # been disabled, reached its quota, or had its discount edited.
