@@ -422,6 +422,11 @@ export const AdminOrders: React.FC = () => {
                       <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold border ${getStatusBadge(ord.status)}`}>
                         {ord.status}
                       </span>
+                      {ord.admin_note && /already_gold|already_registered|gold_check/i.test(ord.admin_note) && (
+                        <div className="mt-1 max-w-[220px] truncate text-[10px] text-amber-300" title={ord.admin_note}>
+                          {ord.admin_note}
+                        </div>
+                      )}
                     </td>
                     <td className="py-3.5 px-4 text-zinc-400 whitespace-nowrap">
                       {formatDate(ord.created_at)}
