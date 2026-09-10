@@ -1133,12 +1133,6 @@ def create_plan_payment():
     if validation_error:
         return validation_error
 
-    if username:
-        gold_block = _gold_block_error(username)
-        if gold_block is not None:
-            code, msg = gold_block
-            return jsonify({"success": False, "error": code, "msg": msg}), 409
-
     user_id = g.current_user["id"]
     idempotency_key = str(body.get("idempotency_key") or "").strip()
     if len(idempotency_key) > 200:
@@ -1161,7 +1155,8 @@ def create_plan_payment():
                 "msg": str(exc),
             }), 400
 
-    # Idempotency check
+    # Idempotency check BEFORE gold precheck: an exact retry must return the
+    # original order instead of being blocked as already_registered.
     if idempotency_key:
         existing = db.get_payment_order_by_idempotency(user_id, idempotency_key)
         if existing:
@@ -1202,6 +1197,12 @@ def create_plan_payment():
                 "error": "idempotency_conflict",
                 "msg": "Khóa xử lý trùng lặp nhưng nội dung yêu cầu khác nhau.",
             }), 409
+
+    if username:
+        gold_block = _gold_block_error(username)
+        if gold_block is not None:
+            code, msg = gold_block
+            return jsonify({"success": False, "error": code, "msg": msg}), 409
 
     conn = db.get_conn()
     now = time.time()
@@ -1834,12 +1835,6 @@ def purchase_plan_coin():
     if fulfillment_error:
         return fulfillment_error
 
-    if username:
-        gold_block = _gold_block_error(username)
-        if gold_block is not None:
-            code, msg = gold_block
-            return jsonify({"success": False, "error": code, "msg": msg}), 409
-
     user_id = g.current_user["id"]
     price_coin = plan["price_coin"]
     client_idem = str(body.get("idempotency_key") or "").strip()
@@ -1850,8 +1845,63 @@ def purchase_plan_coin():
             "msg": "Khóa chống trùng giao dịch không hợp lệ.",
         }), 400
     coupon_code = str(body.get("coupon_code") or "").strip()
-    idempotency_key = client_idem or f"coin_order_{user_id}_{plan_id}_{secrets.token_hex(12)}"
-    tx_status, tx_res = db.purchase_plan_with_coin_atomic(
+
+    # Idempotency dedupe BEFORE gold precheck: an exact retry must return the
+    # original order instead of being blocked as already_registered.
+    # Gold check below applies only to new content.
+    tx_status = None
+    tx_res = None
+    if client_idem:
+        from .. import coupon_service
+        normalized_request_coupon = None
+        coupon_format_ok = True
+        if coupon_code:
+            try:
+                normalized_request_coupon = coupon_service.normalize_code(coupon_code)
+            except ValueError:
+                coupon_format_ok = False
+        if coupon_format_ok:
+            conn = db.get_conn()
+            existing_tx = conn.execute(
+                "SELECT * FROM wallet_transactions WHERE idempotency_key = ?",
+                (client_idem,),
+            ).fetchone()
+            if existing_tx is not None:
+                existing_order = None
+                if existing_tx["reference_type"] == "activation_order" and existing_tx["reference_id"]:
+                    existing_order = conn.execute(
+                        "SELECT * FROM activation_orders WHERE id = ?",
+                        (existing_tx["reference_id"],),
+                    ).fetchone()
+                if (existing_order is not None
+                        and existing_order["user_id"] == user_id
+                        and existing_order["plan_id"] == plan_id
+                        and existing_order["platform"] == platform
+                        and existing_order["fulfillment_mode_snapshot"] == mode
+                        and (existing_order["locket_username"] or "") == (username or "").strip()
+                        and (existing_order["contact_zalo"] or "") == (contact_zalo or "").strip()
+                        and (existing_order["contact_facebook"] or "") == (contact_facebook or "").strip()
+                        and (existing_order["coupon_code_snapshot"] or "") == (normalized_request_coupon or "")):
+                    tx_status, tx_res = "idempotent", {
+                        "order": dict(existing_order),
+                        "remaining_balance": existing_tx["balance_after"],
+                    }
+                else:
+                    return jsonify({
+                        "success": False,
+                        "error": "idempotency_conflict",
+                        "msg": "Khóa giao dịch đã được dùng cho một yêu cầu khác.",
+                    }), 409
+
+    if tx_status is None:
+        if username:
+            gold_block = _gold_block_error(username)
+            if gold_block is not None:
+                code, msg = gold_block
+                return jsonify({"success": False, "error": code, "msg": msg}), 409
+
+        idempotency_key = client_idem or f"coin_order_{user_id}_{plan_id}_{secrets.token_hex(12)}"
+        tx_status, tx_res = db.purchase_plan_with_coin_atomic(
         user_id=user_id,
         plan_id=plan_id,
         platform=platform,
