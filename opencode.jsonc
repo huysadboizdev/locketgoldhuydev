@@ -11,6 +11,12 @@
       "models": {
         "glm-5.3-flash": {
           "name": "GLM-5.3-Flash"
+        },
+        "hy3": {
+          "name": "Hy3"
+        },
+        "qwen3.8-flash": {
+          "name": "Qwen3.8-Flash"
         }
       }
     },
