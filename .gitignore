@@ -46,3 +46,7 @@ Thumbs.db
 # ---- Local dev helpers (not needed to run the app) ----
 /scripts/dev_local.ps1
 /scripts/run_local_preview.py
+
+# ---- LunaKey backend tests (contain dummy API-key strings; keep local only) ----
+/backend/tests/test_lunakey_*.py
+/backend/tests/fixtures/
