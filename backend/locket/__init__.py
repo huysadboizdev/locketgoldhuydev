@@ -33,6 +33,7 @@ from .reviews import reviews_bp
 from .creators import creators_bp
 from .sepay_webhook import sepay_webhook_bp
 from .queue_manager import QueueManager
+from .provider_worker import ProviderWorker
 from .rotator import AccountRotator
 
 
@@ -54,6 +55,13 @@ def create_app():
         app.rotator = None
 
     app.queue_manager = QueueManager(app.rotator, app=app)
+
+    # LunaKey provider worker: independent of the Locket account rotator. It
+    # only performs network I/O when it claims a durable provider job, so tests
+    # and fresh installs stay offline. Disable explicitly with
+    # LUNAKEY_WORKER_ENABLED=0.
+    app.provider_worker = ProviderWorker(app=app)
+    app.provider_worker.start()
 
     # Teardown SQLite connection per thread context
     @app.teardown_appcontext

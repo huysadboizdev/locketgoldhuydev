@@ -3,6 +3,7 @@ created_accounts.json
 *.db
 *.db-wal
 *.db-shm
+.devdata/
 *.log
 __pycache__/
 .pytest_cache/

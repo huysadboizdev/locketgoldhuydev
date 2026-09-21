@@ -212,6 +212,15 @@ def dispatch_paid_activation_order(order_id, app=None):
         return ("not_found", "Không tìm thấy đơn kích hoạt.")
 
     mode = act_row.get("fulfillment_mode_snapshot") or "auto_activation"
+    provider = act_row.get("activation_provider_snapshot") or "legacy_locket"
+
+    # Third-party providers (LunaKey) use a durable job outbox instead of the
+    # Locket account queue. Fulfillment mode is unchanged ('auto_activation').
+    if provider == "lunakey":
+        from . import lunakey_service
+
+        return lunakey_service.dispatch_provider_order(order_id, app=app)
+
     target_app = app
     if not target_app:
         try:

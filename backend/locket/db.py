@@ -293,11 +293,18 @@ CREATE TABLE IF NOT EXISTS plans (
     is_popular INTEGER NOT NULL DEFAULT 0 CHECK (is_popular IN (0, 1)),
     sort_order INTEGER NOT NULL DEFAULT 0,
     inventory_status TEXT NOT NULL DEFAULT 'in_stock' CHECK (inventory_status IN ('in_stock', 'out_of_stock')),
+    activation_provider TEXT NOT NULL DEFAULT 'legacy_locket',
+    provider_category TEXT,
+    warranty_months INTEGER CHECK (warranty_months IS NULL OR warranty_months >= 0),
+    warranty_policy TEXT,
+    allow_existing_gold INTEGER NOT NULL DEFAULT 0 CHECK (allow_existing_gold IN (0, 1)),
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_plans_active_sort ON plans(is_active, sort_order ASC);
 CREATE INDEX IF NOT EXISTS idx_plans_slug ON plans(slug);
+-- idx_plans_provider is created by _migrate_provider_columns AFTER the
+-- activation_provider column is added, so legacy DBs upgrade cleanly.
 
 CREATE TABLE IF NOT EXISTS wallets (
     user_id INTEGER PRIMARY KEY,
@@ -386,6 +393,25 @@ CREATE TABLE IF NOT EXISTS activation_orders (
     discount_coin_snapshot INTEGER NOT NULL DEFAULT 0,
     coupon_id INTEGER,
     coupon_code_snapshot TEXT,
+    activation_provider_snapshot TEXT NOT NULL DEFAULT 'legacy_locket',
+    provider_category_snapshot TEXT,
+    warranty_months_snapshot INTEGER,
+    warranty_policy_snapshot TEXT,
+    provider_uid TEXT,
+    provider_username TEXT,
+    provider_profile_json TEXT,
+    provider_request_id TEXT,
+    provider_order_code TEXT,
+    provider_price_deducted INTEGER,
+    provider_currency TEXT,
+    provider_balance_snapshot INTEGER,
+    provider_balance_at REAL,
+    provider_last_error_code TEXT,
+    provider_last_error_msg TEXT,
+    provider_completed_at REAL,
+    warranty_started_at REAL,
+    warranty_ends_at REAL,
+    request_fingerprint TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (payment_order_id) REFERENCES payment_orders(id) ON DELETE SET NULL,
     FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE SET NULL
@@ -393,6 +419,8 @@ CREATE TABLE IF NOT EXISTS activation_orders (
 CREATE INDEX IF NOT EXISTS idx_act_orders_user_created ON activation_orders(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_act_orders_status ON activation_orders(status);
 CREATE INDEX IF NOT EXISTS idx_act_orders_client_id ON activation_orders(queue_client_id);
+-- Provider indexes are created by _migrate_provider_columns after the columns
+-- are added, so legacy DBs upgrade cleanly.
 
 CREATE TABLE IF NOT EXISTS coupons (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -453,6 +481,64 @@ CREATE INDEX IF NOT EXISTS idx_coupon_redemptions_user_coupon ON coupon_redempti
 CREATE INDEX IF NOT EXISTS idx_coupon_redemptions_pay ON coupon_redemptions(payment_order_id);
 CREATE INDEX IF NOT EXISTS idx_coupon_redemptions_act ON coupon_redemptions(activation_order_id);
 CREATE INDEX IF NOT EXISTS idx_coupon_redemptions_expires ON coupon_redemptions(status, expires_at);
+
+-- Durable outbox for third-party activation providers (e.g. LunaKey).
+-- One row per activation order. The row is the single source of truth for
+-- retry/idempotency: request_id and payload_hash never change for a given row.
+CREATE TABLE IF NOT EXISTS provider_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL UNIQUE,
+    provider TEXT NOT NULL,
+    provider_request_id TEXT NOT NULL UNIQUE,
+    payload_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'leased', 'succeeded', 'failed', 'awaiting_reconciliation', 'cancelled')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    max_attempts INTEGER NOT NULL DEFAULT 5,
+    next_attempt_at REAL,
+    lease_owner TEXT,
+    lease_expires_at REAL,
+    last_error_code TEXT,
+    last_error_msg TEXT,
+    result_json TEXT,
+    provider_order_code TEXT,
+    -- Replay-safety bookkeeping. first_sent_at is immutable once set (the first
+    -- time the provider may have received the request). replay_deadline is the
+    -- end of the confirmed idempotency window, or NULL when the window is not
+    -- confirmed (in which case an unclear outcome must go to reconciliation).
+    first_sent_at REAL,
+    replay_deadline REAL,
+    last_outcome TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    completed_at REAL,
+    FOREIGN KEY (order_id) REFERENCES activation_orders(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_provider_jobs_claim ON provider_jobs(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_provider_jobs_order ON provider_jobs(order_id);
+CREATE INDEX IF NOT EXISTS idx_provider_jobs_lease ON provider_jobs(status, lease_expires_at);
+
+-- Short-lived, server-side confirmation of a provider profile lookup. The
+-- purchase endpoint only trusts the UID stored here, never a UID sent by the
+-- browser.
+CREATE TABLE IF NOT EXISTS provider_lookups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash TEXT NOT NULL UNIQUE,
+    provider TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    plan_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    uid TEXT,
+    profile_json TEXT,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    used_at REAL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_provider_lookups_user ON provider_lookups(user_id, plan_id);
+CREATE INDEX IF NOT EXISTS idx_provider_lookups_expires ON provider_lookups(expires_at);
 """
 
 
@@ -771,10 +857,72 @@ def init(force=False):
             "WHERE renewed_from_payment_id IS NOT NULL"
         )
 
+        _migrate_provider_columns(conn)
+
         _migrate_legacy_files(conn)
         _initialized = True
         _initialized_paths.add(current_path)
         print(f"db: initialized at {get_db_path()}")
+
+
+def _add_columns_if_missing(conn, table, columns):
+    """Add missing columns to an existing table. Idempotent and safe to re-run.
+
+    ``columns`` maps column name -> SQL type/definition. Existing rows receive
+    the column default, so NOT NULL additions must carry a constant DEFAULT.
+    """
+    existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, definition in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+            print(f"db: added {name} column to {table}")
+
+
+def _migrate_provider_columns(conn):
+    """Idempotent migration for activation-provider metadata (LunaKey).
+
+    Runs on every startup and is safe on both legacy and fresh databases. New
+    columns are additive; no existing column, index, FK or CHECK is removed.
+    """
+    _add_columns_if_missing(conn, "plans", {
+        "activation_provider": "TEXT NOT NULL DEFAULT 'legacy_locket'",
+        "provider_category": "TEXT",
+        "warranty_months": "INTEGER",
+        "warranty_policy": "TEXT",
+        "allow_existing_gold": "INTEGER NOT NULL DEFAULT 0",
+    })
+    _add_columns_if_missing(conn, "activation_orders", {
+        "activation_provider_snapshot": "TEXT NOT NULL DEFAULT 'legacy_locket'",
+        "provider_category_snapshot": "TEXT",
+        "warranty_months_snapshot": "INTEGER",
+        "warranty_policy_snapshot": "TEXT",
+        "provider_uid": "TEXT",
+        "provider_username": "TEXT",
+        "provider_profile_json": "TEXT",
+        "provider_request_id": "TEXT",
+        "provider_order_code": "TEXT",
+        "provider_price_deducted": "INTEGER",
+        "provider_currency": "TEXT",
+        "provider_balance_snapshot": "INTEGER",
+        "provider_balance_at": "REAL",
+        "provider_last_error_code": "TEXT",
+        "provider_last_error_msg": "TEXT",
+        "provider_completed_at": "REAL",
+        "warranty_started_at": "REAL",
+        "warranty_ends_at": "REAL",
+        "request_fingerprint": "TEXT",
+    })
+    _add_columns_if_missing(conn, "provider_jobs", {
+        "first_sent_at": "REAL",
+        "replay_deadline": "REAL",
+        "last_outcome": "TEXT",
+    })
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_plans_provider ON plans(activation_provider)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_act_orders_provider "
+        "ON activation_orders(activation_provider_snapshot, status)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_act_orders_provider_uid ON activation_orders(provider_uid)")
 
 
 def _migrate_legacy_files(conn):
@@ -1801,10 +1949,33 @@ def resolve_plan_fulfillment(plan, platform):
         raise ValueError("fulfillment_disabled")
     return mode
 
+VALID_ACTIVATION_PROVIDERS = {"legacy_locket", "lunakey"}
+
+
+def validate_plan_provider(activation_provider, provider_category=None, warranty_months=None,
+                           warranty_policy=None, allow_existing_gold=0):
+    if activation_provider not in VALID_ACTIVATION_PROVIDERS:
+        raise ValueError("activation_provider không hợp lệ.")
+    if provider_category is not None and not str(provider_category).strip():
+        provider_category = None
+    if activation_provider == "legacy_locket" and (provider_category or warranty_months):
+        raise ValueError("Gói legacy không được cấu hình provider/category/bảo hành.")
+    if warranty_months is not None:
+        if type(warranty_months) is not int or warranty_months < 0 or warranty_months > 120:
+            raise ValueError("warranty_months phải là số nguyên từ 0 đến 120.")
+    if warranty_months and not (warranty_policy and str(warranty_policy).strip()):
+        # Warranty is a promise; it needs an explicit source/policy. A plan may
+        # still be created as a draft, but it will not be sellable.
+        pass
+    return activation_provider
+
+
 def create_plan(name, slug, short_description="", duration_days=30, price_vnd=10000, product_id=None,
                 features=None, supported_platforms='all', is_active=1, is_popular=0,
                 sort_order=0, inventory_status='in_stock', ios_fulfillment_mode=None,
-                android_fulfillment_mode=None, **kwargs):
+                android_fulfillment_mode=None, activation_provider='legacy_locket',
+                provider_category=None, warranty_months=None, warranty_policy=None,
+                allow_existing_gold=0, **kwargs):
     """Create a new service plan.
     price_vnd must be integer > 0 and divisible by 1000.
     features can be a list or a JSON string.
@@ -1835,6 +2006,8 @@ def create_plan(name, slug, short_description="", duration_days=30, price_vnd=10
     if android_fulfillment_mode is None:
         android_fulfillment_mode = "disabled" if supported_platforms == "ios" else "apk_download"
     validate_plan_fulfillment(supported_platforms, ios_fulfillment_mode, android_fulfillment_mode)
+    validate_plan_provider(activation_provider, provider_category, warranty_months,
+                           warranty_policy, allow_existing_gold)
 
     features_json = json.dumps(features) if isinstance(features, list) else (features or "[]")
     now = time.time()
@@ -1844,8 +2017,9 @@ def create_plan(name, slug, short_description="", duration_days=30, price_vnd=10
            (name, slug, short_description, duration_days, price_vnd, product_id,
             features_json, supported_platforms, ios_fulfillment_mode, android_fulfillment_mode,
             is_active, is_popular, sort_order,
-            inventory_status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            inventory_status, activation_provider, provider_category, warranty_months,
+            warranty_policy, allow_existing_gold, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             name.strip(),
             slug.strip().lower(),
@@ -1861,6 +2035,11 @@ def create_plan(name, slug, short_description="", duration_days=30, price_vnd=10
             1 if is_popular else 0,
             int(sort_order),
             inventory_status,
+            activation_provider,
+            (str(provider_category).strip() if provider_category else None),
+            warranty_months,
+            (str(warranty_policy).strip() if warranty_policy else None),
+            1 if allow_existing_gold else 0,
             now,
             now,
         ),
@@ -1874,7 +2053,9 @@ def update_plan(plan_id, **kwargs):
         "name", "slug", "short_description", "duration_days", "price_vnd",
         "product_id", "features_json", "features", "supported_platforms",
         "is_active", "is_popular", "sort_order", "inventory_status",
-        "ios_fulfillment_mode", "android_fulfillment_mode"
+        "ios_fulfillment_mode", "android_fulfillment_mode",
+        "activation_provider", "provider_category", "warranty_months",
+        "warranty_policy", "allow_existing_gold",
     }
     current = get_plan_by_id(plan_id, public=False)
     if not current:
@@ -1883,6 +2064,13 @@ def update_plan(plan_id, **kwargs):
     candidate_ios = kwargs.get("ios_fulfillment_mode", current.get("ios_fulfillment_mode", "auto_activation"))
     candidate_android = kwargs.get("android_fulfillment_mode", current.get("android_fulfillment_mode", "disabled"))
     validate_plan_fulfillment(candidate_platform, candidate_ios, candidate_android)
+    validate_plan_provider(
+        kwargs.get("activation_provider", current.get("activation_provider", "legacy_locket")),
+        kwargs.get("provider_category", current.get("provider_category")),
+        kwargs.get("warranty_months", current.get("warranty_months")),
+        kwargs.get("warranty_policy", current.get("warranty_policy")),
+        kwargs.get("allow_existing_gold", current.get("allow_existing_gold", 0)),
+    )
     updates = []
     params = []
     for k, v in kwargs.items():
@@ -1924,6 +2112,20 @@ def update_plan(plan_id, **kwargs):
                 raise ValueError("invalid android_fulfillment_mode")
             updates.append("android_fulfillment_mode = ?")
             params.append(v)
+        elif k in ("provider_category", "warranty_policy"):
+            updates.append(f"{k} = ?")
+            params.append(str(v).strip() if v not in (None, "") else None)
+        elif k == "warranty_months":
+            if v in (None, ""):
+                params.append(None)
+            elif type(v) is int and 0 <= v <= 120:
+                params.append(v)
+            else:
+                raise ValueError("warranty_months phải là số nguyên từ 0 đến 120.")
+            updates.append("warranty_months = ?")
+        elif k == "allow_existing_gold":
+            updates.append("allow_existing_gold = ?")
+            params.append(1 if v else 0)
         else:
             updates.append(f"{k} = ?")
             params.append(v)
@@ -1959,9 +2161,19 @@ def _format_plan_row(row, public=True):
         d["features"] = []
     # Coin price is strictly computed by backend: 1 Coin = 1,000 VND
     d["price_coin"] = int(d["price_vnd"] // 1000)
+    # Activation provider metadata (added in the LunaKey migration). Default to
+    # legacy values so rows loaded before the migration still render safely.
+    d.setdefault("activation_provider", "legacy_locket")
+    d["activation_provider"] = d.get("activation_provider") or "legacy_locket"
+    d.setdefault("provider_category", None)
+    d.setdefault("warranty_months", None)
+    d.setdefault("warranty_policy", None)
+    d.setdefault("allow_existing_gold", 0)
+    d["existing_gold_supported"] = bool(d.get("allow_existing_gold"))
     if public:
         # Never leak internal details in public view
         d.pop("features_json", None)
+        d.pop("allow_existing_gold", None)
     return d
 
 
@@ -2814,11 +3026,14 @@ def reject_payment_order_tx(payment_id, status='cancelled', note=None, audit_con
 
 VALID_ACT_TRANSITIONS = {
     "awaiting_payment": {"paid", "cancelled"},
-    "paid": {"awaiting_queue", "queued", "processing", "completed", "refunded", "cancelled"},
+    "paid": {"awaiting_queue", "queued", "processing", "completed", "failed", "refunded", "cancelled"},
     "awaiting_queue": {"queued", "cancelled", "refunded"},
     "queued": {"processing", "failed", "cancelled"},
     "processing": {"completed", "failed"},
-    "failed": {"awaiting_queue", "refunded"},
+    # A confirmed failure may be retried (back to the post-payment state) or,
+    # when upstream confirms success, recovered to completed during
+    # reconciliation. It may still be refunded instead.
+    "failed": {"awaiting_queue", "paid", "completed", "refunded"},
     "completed": set(),
     "refunded": set(),
     "cancelled": set(),
@@ -2828,7 +3043,11 @@ VALID_ACT_TRANSITIONS = {
 def purchase_plan_with_coin_atomic(user_id, plan_id, platform, fulfillment_mode,
                                    locket_username="", contact_zalo=None,
                                    contact_facebook=None, idempotency_key=None,
-                                   coupon_code=None):
+                                   coupon_code=None, provider=None,
+                                   provider_category=None, warranty_months=None,
+                                   warranty_policy=None, provider_uid=None,
+                                   provider_username=None, provider_profile_json=None,
+                                   request_fingerprint=None):
     """Debit Coin and create exactly one activation order in one transaction.
 
     The fulfillment mode is resolved again from the persisted plan so callers
@@ -2862,6 +3081,20 @@ def purchase_plan_with_coin_atomic(user_id, plan_id, platform, fulfillment_mode,
             conn.execute("ROLLBACK")
             return ("error", "fulfillment_mode_mismatch")
 
+        # Provider is derived from the persisted plan, never from the client.
+        plan_provider = plan.get("activation_provider") or "legacy_locket"
+        if provider is not None and provider != plan_provider:
+            conn.execute("ROLLBACK")
+            return ("error", "provider_mismatch")
+        provider = plan_provider
+        if provider == "lunakey":
+            if not plan.get("provider_category"):
+                conn.execute("ROLLBACK")
+                return ("error", "plan_provider_not_configured")
+            if plan.get("warranty_months") and not plan.get("warranty_policy"):
+                conn.execute("ROLLBACK")
+                return ("error", "plan_warranty_policy_missing")
+
         # Defense-in-depth: reject purchase if this Locket username already has an
         # IN-FLIGHT activation order (prevents race where two concurrent purchases
         # pass the route-level check). Completed/failed/cancelled orders are allowed
@@ -2875,6 +3108,19 @@ def purchase_plan_with_coin_atomic(user_id, plan_id, platform, fulfillment_mode,
                 (key,),
             ).fetchone()
             if prior:
+                conn.execute("ROLLBACK")
+                return ("gold_blocked", {"error": "duplicate_in_progress", "msg": "Đơn của tài khoản này đang được xử lý."})
+        # Canonical-UID duplicate guard for provider orders (link vs username).
+        if provider == "lunakey" and provider_uid and str(provider_uid).strip():
+            uid_key = str(provider_uid).strip()
+            prior_uid = conn.execute(
+                """SELECT id FROM activation_orders
+                   WHERE provider_uid = ? AND activation_provider_snapshot = 'lunakey'
+                     AND status IN ('paid','awaiting_queue','queued','processing')
+                   ORDER BY id DESC LIMIT 1""",
+                (uid_key,),
+            ).fetchone()
+            if prior_uid:
                 conn.execute("ROLLBACK")
                 return ("gold_blocked", {"error": "duplicate_in_progress", "msg": "Đơn của tài khoản này đang được xử lý."})
 
@@ -2963,11 +3209,16 @@ def purchase_plan_with_coin_atomic(user_id, plan_id, platform, fulfillment_mode,
                 "shortage_coin": price_coin - balance_before,
             })
 
-        initial_status = {
-            "auto_activation": "awaiting_queue",
-            "manual_contact": "paid",
-            "apk_download": "completed",
-        }[resolved_mode]
+        if provider == "lunakey":
+            # A provider order has no queue: it waits for the durable provider
+            # job worker. 'paid' is the correct post-payment state here.
+            initial_status = "paid"
+        else:
+            initial_status = {
+                "auto_activation": "awaiting_queue",
+                "manual_contact": "paid",
+                "apk_download": "completed",
+            }[resolved_mode]
         cursor = conn.execute(
             """INSERT INTO activation_orders
                (user_id, plan_id, plan_name_snapshot, product_id_snapshot, duration_days_snapshot,
@@ -2975,14 +3226,22 @@ def purchase_plan_with_coin_atomic(user_id, plan_id, platform, fulfillment_mode,
                 platform, locket_username, fulfillment_mode_snapshot, contact_zalo,
                 contact_facebook, status, created_at, updated_at,
                 original_price_vnd_snapshot, original_price_coin_snapshot,
-                discount_vnd_snapshot, discount_coin_snapshot, coupon_id, coupon_code_snapshot)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'coin', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                discount_vnd_snapshot, discount_coin_snapshot, coupon_id, coupon_code_snapshot,
+                activation_provider_snapshot, provider_category_snapshot,
+                warranty_months_snapshot, warranty_policy_snapshot, provider_uid,
+                provider_username, provider_profile_json, request_fingerprint)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'coin', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 user_id, plan_id, plan["name"], plan["product_id"], plan["duration_days"],
                 price_vnd, price_coin, platform, (locket_username or "").strip(),
                 resolved_mode, (contact_zalo or "").strip() or None,
                 (contact_facebook or "").strip() or None, initial_status, now, now,
                 orig_vnd, orig_coin, disc_vnd, disc_coin, coupon_id, coupon_code_snapshot,
+                provider, plan.get("provider_category"),
+                plan.get("warranty_months"), plan.get("warranty_policy"),
+                (str(provider_uid).strip() if provider_uid else None),
+                (str(provider_username).strip() if provider_username else None),
+                provider_profile_json, request_fingerprint,
             ),
         )
         order_id = cursor.lastrowid
@@ -3034,7 +3293,9 @@ def purchase_plan_with_coin_atomic(user_id, plan_id, platform, fulfillment_mode,
 
 def create_activation_order(user_id, plan_id, payment_method='coin', platform='ios', locket_username=None,
                             payment_order_id=None, initial_status=None, fulfillment_mode=None,
-                            contact_zalo=None, contact_facebook=None, **kwargs):
+                            contact_zalo=None, contact_facebook=None,
+                            provider_uid=None, provider_username=None, provider_profile_json=None,
+                            **kwargs):
     """Create an activation order with immutable plan snapshot."""
     if locket_username is None:
         locket_username = kwargs.get("target_username") or kwargs.get("username") or ""
@@ -3067,9 +3328,12 @@ def create_activation_order(user_id, plan_id, payment_method='coin', platform='i
         raise ValueError("fulfillment mode does not match plan configuration")
     fulfillment_mode = resolved_mode
 
+    plan_provider = plan.get("activation_provider") or "legacy_locket"
     if initial_status is None:
         if payment_method == "qr":
             initial_status = "awaiting_payment"
+        elif plan_provider == "lunakey":
+            initial_status = "paid"
         else:
             initial_status = {
                 "auto_activation": "awaiting_queue",
@@ -3085,8 +3349,11 @@ def create_activation_order(user_id, plan_id, payment_method='coin', platform='i
            (user_id, plan_id, plan_name_snapshot, product_id_snapshot, duration_days_snapshot,
             price_vnd_snapshot, price_coin_snapshot, payment_method, payment_order_id,
             platform, locket_username, fulfillment_mode_snapshot, contact_zalo,
-            contact_facebook, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            contact_facebook, status, created_at, updated_at,
+            activation_provider_snapshot, provider_category_snapshot,
+            warranty_months_snapshot, warranty_policy_snapshot, provider_uid,
+            provider_username, provider_profile_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             user_id,
             plan_id,
@@ -3098,13 +3365,20 @@ def create_activation_order(user_id, plan_id, payment_method='coin', platform='i
             payment_method,
             payment_order_id,
             platform,
-            locket_username.strip(),
+            (locket_username or "").strip(),
             fulfillment_mode,
             (contact_zalo or "").strip() or None,
             (contact_facebook or "").strip() or None,
             initial_status,
             now,
             now,
+            plan_provider,
+            plan.get("provider_category"),
+            plan.get("warranty_months"),
+            plan.get("warranty_policy"),
+            (str(provider_uid).strip() if provider_uid else None),
+            (str(provider_username).strip() if provider_username else None),
+            provider_profile_json,
         ),
     )
     return cursor.lastrowid
@@ -3125,7 +3399,14 @@ def get_activation_order_by_id(order_id, user_id=None):
 get_activation_order = get_activation_order_by_id
 
 
-def normalize_locket_username(raw):
+def normalize_locket_username(raw, lower=True):
+    """Extract a Locket handle from a raw username, ``@handle`` or a profile URL.
+
+    Handles ``https://locket.cam/<handle>`` and
+    ``https://locket.camera/links/<handle>``. ``lower=False`` preserves the
+    original case (used when the exact string is forwarded to a provider that
+    owns the canonical username).
+    """
     if not raw:
         return ""
     s = str(raw).strip()
@@ -3135,7 +3416,8 @@ def normalize_locket_username(raw):
         s = s.split("locket.cam/")[-1].split("?")[0].strip("/")
     elif "locket.camera/links/" in s:
         s = s.split("locket.camera/links/")[-1].split("?")[0].strip("/")
-    return s.strip().lower()
+    s = s.strip()
+    return s.lower() if lower else s
 
 
 _INFLIGHT_STATUSES = ("paid", "awaiting_queue", "queued", "processing")
@@ -3550,6 +3832,25 @@ def refund_activation_order_coin(order_id, reason="Hoàn Coin do đơn kích ho�
             conn.execute("ROLLBACK")
             return ("error", f"Không thể hoàn tiền đơn ở trạng thái '{row['status']}'.")
 
+        # A refund is only safe when the provider outcome is a definite failure.
+        # A succeeded job, an in-flight/pending send, or an unclear result must
+        # never be refunded: the upstream activation may still land.
+        for job in conn.execute(
+            "SELECT status, last_outcome FROM provider_jobs WHERE order_id = ?",
+            (order_id,),
+        ).fetchall():
+            job_status = job["status"]
+            outcome = job["last_outcome"]
+            if job_status == "succeeded" or outcome == "succeeded":
+                conn.execute("ROLLBACK")
+                return ("error", "activation_succeeded")
+            if job_status == "leased":
+                conn.execute("ROLLBACK")
+                return ("error", "activation_in_flight")
+            if job_status in ("pending", "awaiting_reconciliation") and outcome != "rejected":
+                conn.execute("ROLLBACK")
+                return ("error", "activation_outcome_unclear")
+
         user_id = row["user_id"]
         amount_coin = row["price_coin_snapshot"]
         idempotency_key = f"refund_act_{order_id}"
@@ -3583,6 +3884,16 @@ def refund_activation_order_coin(order_id, reason="Hoàn Coin do đơn kích ho�
 
         conn.execute(
             "UPDATE activation_orders SET status = 'refunded', updated_at = ? WHERE id = ?",
+            (now, order_id),
+        )
+        # Coordinate refund with the provider worker: cancel any runnable job so
+        # a refunded order can never be activated afterwards. The worker's
+        # fencing check then rejects any in-flight finalize.
+        conn.execute(
+            """UPDATE provider_jobs
+                  SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL,
+                      last_error_code = 'refunded', updated_at = ?
+                WHERE order_id = ? AND status IN ('pending', 'leased', 'awaiting_reconciliation')""",
             (now, order_id),
         )
 
@@ -4574,3 +4885,606 @@ def get_coupon_stats(coupon_id):
         "total_revenue_vnd": counts["total_revenue_vnd"] or 0,
         "recent_redemptions": [dict(r) for r in recent_redemptions],
     }
+
+
+# ---- Provider jobs (durable activation outbox) ----
+
+PROVIDER_JOB_STATUSES = (
+    "pending",
+    "leased",
+    "succeeded",
+    "failed",
+    "awaiting_reconciliation",
+    "cancelled",
+)
+
+# Only these activation_orders columns may be written by the provider worker.
+_PROVIDER_ORDER_COLUMNS = {
+    "status",
+    "queue_client_id",
+    "provider_request_id",
+    "provider_username",
+    "provider_uid",
+    "provider_profile_json",
+    "provider_order_code",
+    "provider_price_deducted",
+    "provider_currency",
+    "provider_balance_snapshot",
+    "provider_balance_at",
+    "provider_last_error_code",
+    "provider_last_error_msg",
+    "provider_completed_at",
+    "warranty_started_at",
+    "warranty_ends_at",
+    "updated_at",
+}
+
+# Only these provider_jobs columns may be written by the provider worker.
+_PROVIDER_JOB_COLUMNS = {
+    "status",
+    "attempt_count",
+    "next_attempt_at",
+    "lease_owner",
+    "lease_expires_at",
+    "last_error_code",
+    "last_error_msg",
+    "result_json",
+    "provider_order_code",
+    "first_sent_at",
+    "replay_deadline",
+    "last_outcome",
+    "updated_at",
+    "completed_at",
+}
+
+
+def create_provider_job(order_id, provider, provider_request_id, payload_hash, payload_json,
+                        max_attempts=5, next_attempt_at=None):
+    """Insert exactly one durable job per order. Idempotent.
+
+    Returns the existing/created row id. Reusing the order's stored request_id
+    and payload keeps provider idempotency intact across retries and restarts.
+    """
+    if not order_id or not provider or not provider_request_id:
+        raise ValueError("order_id, provider and provider_request_id are required")
+    conn = get_conn()
+    now = time.time()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT id, provider_request_id, payload_hash FROM provider_jobs WHERE order_id = ?",
+            (order_id,),
+        ).fetchone()
+        if existing:
+            conn.execute("COMMIT")
+            return existing["id"]
+        cursor = conn.execute(
+            """INSERT INTO provider_jobs
+               (order_id, provider, provider_request_id, payload_hash, payload_json,
+                status, attempt_count, max_attempts, next_attempt_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)""",
+            (order_id, provider, provider_request_id, payload_hash, payload_json,
+             int(max_attempts), next_attempt_at, now, now),
+        )
+        job_id = cursor.lastrowid
+        conn.execute("COMMIT")
+        return job_id
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+
+
+def get_provider_job_by_order(order_id):
+    if not order_id:
+        return None
+    row = get_conn().execute(
+        "SELECT * FROM provider_jobs WHERE order_id = ?", (order_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_provider_job_by_id(job_id):
+    if not job_id:
+        return None
+    row = get_conn().execute(
+        "SELECT * FROM provider_jobs WHERE id = ?", (job_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_provider_jobs_admin(status=None, provider=None, query=None, limit=50, offset=0):
+    conn = get_conn()
+    limit = max(1, min(int(limit), 100))
+    offset = max(0, int(offset))
+    where = []
+    params = []
+    if status and status != "all":
+        where.append("j.status = ?")
+        params.append(status)
+    if provider and provider != "all":
+        where.append("j.provider = ?")
+        params.append(provider)
+    if query:
+        q = f"%{str(query).strip().lower()}%"
+        where.append("(LOWER(COALESCE(o.locket_username, '')) LIKE ? OR LOWER(COALESCE(j.provider_order_code, '')) LIKE ? OR CAST(j.order_id AS TEXT) LIKE ?)")
+        params.extend([q, q, q])
+    where_clause = f"WHERE {' AND '.join(where)}" if where else ""
+    total = conn.execute(
+        f"""SELECT COUNT(*) AS cnt FROM provider_jobs j
+            LEFT JOIN activation_orders o ON o.id = j.order_id {where_clause}""",
+        params,
+    ).fetchone()["cnt"]
+    rows = conn.execute(
+        f"""SELECT j.*, o.user_id, o.plan_name_snapshot, o.locket_username,
+                   o.platform, o.status AS order_status, o.price_vnd_snapshot,
+                   o.price_coin_snapshot, o.payment_method
+              FROM provider_jobs j
+              LEFT JOIN activation_orders o ON o.id = j.order_id
+              {where_clause}
+             ORDER BY j.id DESC LIMIT ? OFFSET ?""",
+        tuple(params + [limit, offset]),
+    ).fetchall()
+    return {"items": [dict(r) for r in rows], "total": total, "limit": limit, "offset": offset}
+
+
+# Activation-order states in which a provider send is still desired. A job whose
+# order is refunded/cancelled/completed/awaiting_payment must never be claimed.
+_PROVIDER_CLAIMABLE_ORDER_STATUSES = ("paid", "awaiting_queue", "queued", "processing", "failed")
+
+
+def claim_provider_job(lease_owner, lease_seconds=120, replay_window_seconds=0):
+    """Atomically lease the next runnable pending job.
+
+    Guards enforced in the same atomic statement (so they cannot be raced):
+
+    - the order must still be in a state where activation is wanted;
+    - a job that may already have been sent (``first_sent_at`` set) may only be
+      re-sent when the previous outcome was a definite rejection, or while a
+      *confirmed* replay window is still open. When the window is unknown an
+      unclear result must go to reconciliation instead of being re-sent.
+
+    ``first_sent_at`` and ``replay_deadline`` are set once and never changed
+    afterwards (COALESCE keeps the original value).
+
+    Claiming a new attempt atomically resets ``last_outcome`` to
+    ``sent_unclear``: the *previous* attempt's outcome (e.g. a definite
+    rejection) must not exempt a *new* send that may now be in flight from the
+    replay guard. If the worker crashes before saving the new result, the row
+    already carries an unclear outcome and will wait for reconciliation.
+    """
+    if not lease_owner:
+        raise ValueError("lease_owner is required")
+    conn = get_conn()
+    now = time.time()
+    window = max(0, int(replay_window_seconds or 0))
+    deadline = (now + window) if window > 0 else None
+    row = conn.execute(
+        """
+        UPDATE provider_jobs
+           SET status = 'leased',
+               lease_owner = ?,
+               lease_expires_at = ?,
+               attempt_count = attempt_count + 1,
+               first_sent_at = COALESCE(first_sent_at, ?),
+               replay_deadline = COALESCE(replay_deadline, ?),
+               last_outcome = 'sent_unclear',
+               updated_at = ?
+         WHERE id = (
+               SELECT pj.id FROM provider_jobs pj
+                WHERE pj.status = 'pending'
+                  AND pj.attempt_count < pj.max_attempts
+                  AND (pj.next_attempt_at IS NULL OR pj.next_attempt_at <= ?)
+                  AND EXISTS (
+                        SELECT 1 FROM activation_orders o
+                         WHERE o.id = pj.order_id
+                           AND o.status IN ('paid','awaiting_queue','queued','processing','failed'))
+                   AND (pj.last_outcome IS NULL OR pj.last_outcome != 'succeeded')
+                   AND (
+                        pj.first_sent_at IS NULL
+                        OR pj.last_outcome = 'rejected'
+                        OR (pj.replay_deadline IS NOT NULL AND pj.replay_deadline > ?))
+                ORDER BY COALESCE(pj.next_attempt_at, pj.created_at) ASC, pj.id ASC
+                LIMIT 1)
+           AND status = 'pending'
+        RETURNING *
+        """,
+        (lease_owner, now + max(5, int(lease_seconds)), now, deadline, now, now, now),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def reclaim_expired_provider_leases(now=None):
+    """Return expired leases to the pending pool. Does not touch attempt_count."""
+    now_ts = time.time() if now is None else now
+    conn = get_conn()
+    cur = conn.execute(
+        """UPDATE provider_jobs
+              SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+            WHERE status = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?""",
+        (now_ts, now_ts),
+    )
+    return cur.rowcount
+
+
+def expire_exhausted_provider_jobs(now=None):
+    """Move pending jobs that ran out of attempts into awaiting reconciliation."""
+    now_ts = time.time() if now is None else now
+    conn = get_conn()
+    cur = conn.execute(
+        """UPDATE provider_jobs
+              SET status = 'awaiting_reconciliation',
+                  last_error_code = COALESCE(last_error_code, 'retry_exhausted'),
+                  last_error_msg = COALESCE(last_error_msg, 'Đã hết số lần thử, chờ đối soát.'),
+                  lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+            WHERE status = 'pending' AND attempt_count >= max_attempts""",
+        (now_ts,),
+    )
+    return cur.rowcount
+
+
+def expire_unreplayable_provider_jobs(now=None):
+    """Move pending jobs that may already have been sent and can no longer be
+    safely replayed (replay window unknown or expired) to reconciliation.
+
+    A job whose last outcome was a definite rejection (nothing was executed
+    upstream) is still safely retryable and is left pending.
+    """
+    now_ts = time.time() if now is None else now
+    conn = get_conn()
+    cur = conn.execute(
+        """UPDATE provider_jobs
+              SET status = 'awaiting_reconciliation',
+                  last_error_code = 'replay_window_expired',
+                  last_error_msg = 'Chưa xác nhận cửa sổ idempotency, chuyển chờ đối soát.',
+                  lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+            WHERE status = 'pending'
+              AND first_sent_at IS NOT NULL
+              AND (last_outcome IS NULL OR last_outcome != 'rejected')
+              AND (replay_deadline IS NULL OR replay_deadline <= ?)""",
+        (now_ts, now_ts),
+    )
+    return cur.rowcount
+
+
+def finalize_provider_job_tx(job_id, lease_owner, job_updates, order_status=None,
+                             order_updates=None):
+    """Finalize a leased job and (optionally) its order in one transaction.
+
+    Fencing: if the lease was lost or stolen, the update is rejected with
+    ``stale_lease`` so an old worker can never overwrite a newer result.
+
+    Job/order atomicity: when a confirmed upstream success cannot be written to
+    the order (its state forbids the transition) the job is NOT reported as a
+    plain success. The success evidence is preserved on the job as
+    ``awaiting_reconciliation`` (``last_outcome='succeeded'``) and the caller
+    gets ``order_conflict`` so it never announces a completion the order does
+    not reflect. A *failure* finalize whose order transition is invalid records
+    the job and leaves the order untouched (``ok_order_skipped``); nothing is
+    half-committed.
+
+    Returns (status, payload) with status in
+    'ok' | 'ok_order_skipped' | 'order_conflict' | 'stale_lease' | 'not_found' | 'error'.
+    """
+    if not job_id or not lease_owner:
+        return ("error", "job_id and lease_owner are required")
+    conn = get_conn()
+    now = time.time()
+    job_updates = dict(job_updates or {})
+    order_updates = dict(order_updates or {})
+    for key in job_updates:
+        if key not in _PROVIDER_JOB_COLUMNS:
+            return ("error", f"column_not_allowed:{key}")
+    for key in order_updates:
+        if key not in _PROVIDER_ORDER_COLUMNS:
+            return ("error", f"column_not_allowed:{key}")
+    if order_status is not None:
+        order_updates["status"] = order_status
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        job = conn.execute("SELECT * FROM provider_jobs WHERE id = ?", (job_id,)).fetchone()
+        if not job:
+            conn.execute("ROLLBACK")
+            return ("not_found", None)
+        if job["status"] != "leased" or job["lease_owner"] != lease_owner:
+            conn.execute("ROLLBACK")
+            return ("stale_lease", None)
+
+        order_row = conn.execute(
+            "SELECT id, status FROM activation_orders WHERE id = ?", (job["order_id"],)
+        ).fetchone()
+        target_status = order_updates.get("status")
+        transition_ok = True
+        if (order_row is not None and target_status is not None
+                and target_status != order_row["status"]):
+            transition_ok = target_status in VALID_ACT_TRANSITIONS.get(order_row["status"], set())
+
+        success = (job_updates.get("status") == "succeeded"
+                   or job_updates.get("last_outcome") == "succeeded")
+        if not transition_ok and success:
+            # Upstream confirmed success, but the order state forbids recording
+            # it. Keep the evidence on the job and hand off to reconciliation;
+            # never report a success the order does not reflect.
+            job_updates["status"] = "awaiting_reconciliation"
+            job_updates["last_outcome"] = "succeeded"
+            job_updates["last_error_code"] = "order_transition_conflict"
+            job_updates["last_error_msg"] = (
+                f"order {order_row['status']} -> {target_status} not allowed"
+            )
+            job_updates["lease_owner"] = None
+            job_updates["lease_expires_at"] = None
+            job_updates.setdefault("updated_at", now)
+            set_clause = ", ".join(f"{k} = ?" for k in job_updates)
+            conn.execute(
+                f"UPDATE provider_jobs SET {set_clause} WHERE id = ?",
+                tuple(job_updates.values()) + (job_id,),
+            )
+            conn.execute("COMMIT")
+            return ("order_conflict", order_row["status"])
+
+        job_updates.setdefault("updated_at", now)
+        if job_updates.get("status") in ("succeeded", "failed", "cancelled"):
+            job_updates.setdefault("completed_at", now)
+        set_clause = ", ".join(f"{k} = ?" for k in job_updates)
+        conn.execute(
+            f"UPDATE provider_jobs SET {set_clause} WHERE id = ?",
+            tuple(job_updates.values()) + (job_id,),
+        )
+
+        result_status = "ok"
+        if order_updates:
+            if order_row is not None and transition_ok:
+                order_updates.setdefault("updated_at", now)
+                o_set = ", ".join(f"{k} = ?" for k in order_updates)
+                conn.execute(
+                    f"UPDATE activation_orders SET {o_set} WHERE id = ?",
+                    tuple(order_updates.values()) + (order_row["id"],),
+                )
+            else:
+                # Failure finalize whose order already moved on: record the job
+                # but leave the terminal order untouched.
+                result_status = "ok_order_skipped"
+        conn.execute("COMMIT")
+        return (result_status, None)
+    except Exception as exc:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        return ("error", str(exc))
+
+
+def reset_provider_job_for_retry(order_id, *, reset_attempts=False, reason=None):
+    """Admin-requested retry using the SAME request_id and payload.
+
+    Never mints a new idempotency key: the job row's request_id and payload are
+    immutable. Refuses to touch an order that must not be activated again
+    (refunded/cancelled/completed/awaiting payment), a job that is currently
+    in flight, and a job whose confirmed replay window has closed.
+
+    Returns (status, job_dict_or_error).
+    """
+    conn = get_conn()
+    now = time.time()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        job = conn.execute("SELECT * FROM provider_jobs WHERE order_id = ?", (order_id,)).fetchone()
+        if not job:
+            conn.execute("ROLLBACK")
+            return ("not_found", None)
+
+        order = conn.execute(
+            "SELECT status FROM activation_orders WHERE id = ?", (order_id,)
+        ).fetchone()
+        if not order:
+            conn.execute("ROLLBACK")
+            return ("order_not_found", None)
+        if order["status"] not in _PROVIDER_CLAIMABLE_ORDER_STATUSES:
+            conn.execute("ROLLBACK")
+            return ("order_not_retryable", order["status"])
+
+        # A confirmed upstream success must never be re-sent, even while the job
+        # is parked in awaiting_reconciliation with the success evidence.
+        if job["status"] == "succeeded" or job["last_outcome"] == "succeeded":
+            conn.execute("ROLLBACK")
+            return ("already_succeeded", None)
+        if job["status"] == "leased":
+            conn.execute("ROLLBACK")
+            return ("job_in_flight", None)
+
+        # Replay-window guard: a job that may already have been sent and whose
+        # outcome was unclear cannot be replayed once the window is unknown or
+        # closed. A definite rejection is always safe to retry.
+        already_sent = job["first_sent_at"] is not None
+        rejected = job["last_outcome"] == "rejected"
+        deadline = job["replay_deadline"]
+        if already_sent and not rejected and (deadline is None or deadline <= now):
+            conn.execute("ROLLBACK")
+            return ("replay_window_expired", None)
+
+        # Re-open the order for the retry in the SAME transaction. Moving
+        # failed -> paid means a later confirmed success can complete the order,
+        # and a later timeout/unclear retry leaves the order non-refundable
+        # (refund only accepts failed/awaiting_queue/queued) so the old failed
+        # state cannot be used to refund a send that is now in flight.
+        if order["status"] == "failed":
+            conn.execute(
+                "UPDATE activation_orders SET status = 'paid', updated_at = ? WHERE id = ?",
+                (now, order_id),
+            )
+
+        new_attempt = 0 if reset_attempts else job["attempt_count"]
+        conn.execute(
+            """UPDATE provider_jobs
+                  SET status = 'pending', next_attempt_at = NULL, lease_owner = NULL,
+                      lease_expires_at = NULL, attempt_count = ?, updated_at = ?
+                WHERE id = ?""",
+            (new_attempt, now, job["id"]),
+        )
+        conn.execute("COMMIT")
+        return ("ok", get_provider_job_by_id(job["id"]))
+    except Exception as exc:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        return ("error", str(exc))
+
+
+# Job states an admin may reconcile. An in-flight (leased), succeeded or
+# cancelled job must not be changed by reconciliation.
+_RECONCILABLE_JOB_STATUSES = ("pending", "awaiting_reconciliation", "failed")
+
+
+def mark_provider_job_reconciled(order_id, *, outcome, note=None):
+    """Admin reconciliation conclusion. 'outcome' is 'completed' or 'failed'.
+
+    The job and its order are updated in one transaction and must stay
+    consistent: if the order transition is not allowed, nothing is changed.
+    """
+    if outcome not in ("completed", "failed"):
+        return ("error", "invalid_outcome")
+    conn = get_conn()
+    now = time.time()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        job = conn.execute("SELECT * FROM provider_jobs WHERE order_id = ?", (order_id,)).fetchone()
+        if not job:
+            conn.execute("ROLLBACK")
+            return ("not_found", None)
+        if job["status"] not in _RECONCILABLE_JOB_STATUSES:
+            conn.execute("ROLLBACK")
+            return ("invalid_job_state", job["status"])
+
+        order_row = conn.execute(
+            "SELECT status FROM activation_orders WHERE id = ?", (order_id,)
+        ).fetchone()
+        if not order_row:
+            conn.execute("ROLLBACK")
+            return ("order_not_found", None)
+
+        order_status = order_row["status"]
+        succeeded_evidence = job["last_outcome"] == "succeeded"
+
+        # A job that already carries confirmed upstream success must never be
+        # downgraded to failed: that would erase the evidence and re-open the
+        # refund path for a service that was actually delivered. A good-faith
+        # refund after delivery is a separate process, not a fake failure.
+        if outcome == "failed" and succeeded_evidence:
+            conn.execute("ROLLBACK")
+            return ("evidence_conflict", "succeeded")
+
+        if order_status != outcome and outcome not in VALID_ACT_TRANSITIONS.get(order_status, set()):
+            # Keep job and order consistent: refuse rather than half-apply.
+            # With success evidence this leaves the job awaiting reconciliation
+            # and the evidence intact for a later recovery.
+            conn.execute("ROLLBACK")
+            return ("invalid_order_transition", order_status)
+
+        if outcome == "completed":
+            job_status, job_outcome = "succeeded", "succeeded"
+        else:
+            job_status, job_outcome = "failed", "failed"
+        conn.execute(
+            """UPDATE provider_jobs
+                  SET status = ?, last_error_code = 'manual_reconciliation',
+                      last_error_msg = ?, last_outcome = ?,
+                      lease_owner = NULL, lease_expires_at = NULL,
+                      updated_at = ?, completed_at = ?
+                WHERE id = ?""",
+            (job_status, (note or "")[:500], job_outcome, now, now, job["id"]),
+        )
+        if order_status != outcome:
+            conn.execute(
+                "UPDATE activation_orders SET status = ?, updated_at = ? WHERE id = ?",
+                (outcome, now, order_id),
+            )
+        conn.execute("COMMIT")
+        return ("ok", get_provider_job_by_id(job["id"]))
+    except Exception as exc:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        return ("error", str(exc))
+
+
+def get_in_flight_provider_order_for_uid(uid):
+    """Return (True, order) if the canonical provider UID has an in-flight order."""
+    if not uid or not str(uid).strip():
+        return (False, None)
+    row = get_conn().execute(
+        """SELECT id, status, provider_uid, locket_username FROM activation_orders
+            WHERE provider_uid = ?
+              AND activation_provider_snapshot = 'lunakey'
+              AND status IN ('paid', 'awaiting_queue', 'queued', 'processing')
+            ORDER BY id DESC LIMIT 1""",
+        (str(uid).strip(),),
+    ).fetchone()
+    if row:
+        return (True, dict(row))
+    return (False, None)
+
+
+# ---- Provider lookup confirmations ----
+
+def create_provider_lookup(token_hash, provider, user_id, plan_id, username, uid,
+                           profile_json, expires_at):
+    conn = get_conn()
+    now = time.time()
+    cursor = conn.execute(
+        """INSERT INTO provider_lookups
+           (token_hash, provider, user_id, plan_id, username, uid, profile_json, created_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (token_hash, provider, user_id, plan_id, username, uid, profile_json, now, expires_at),
+    )
+    return cursor.lastrowid
+
+
+def consume_provider_lookup(token_hash, user_id, plan_id):
+    """Consume a lookup confirmation. Returns the row or None.
+
+    Rejects unknown, expired, wrong-user or wrong-plan tokens. The token is
+    reusable by its owner until it expires so an idempotent purchase retry
+    (double click / network retry with the same idempotency key) still works;
+    duplicate-order protection is enforced by the UID guard at purchase time.
+    """
+    if not token_hash or not user_id or not plan_id:
+        return None
+    conn = get_conn()
+    now = time.time()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM provider_lookups WHERE token_hash = ?", (token_hash,)
+        ).fetchone()
+        if not row:
+            conn.execute("ROLLBACK")
+            return None
+        if (row["expires_at"] < now
+                or row["user_id"] != user_id or row["plan_id"] != plan_id):
+            conn.execute("ROLLBACK")
+            return None
+        conn.execute(
+            "UPDATE provider_lookups SET used_at = COALESCE(used_at, ?) WHERE id = ?",
+            (now, row["id"]),
+        )
+        conn.execute("COMMIT")
+        return dict(row)
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        return None
+
+
+def cleanup_expired_provider_lookups(now=None):
+    now_ts = time.time() if now is None else now
+    cur = get_conn().execute(
+        "DELETE FROM provider_lookups WHERE expires_at < ?", (now_ts - 3600,)
+    )
+    return cur.rowcount

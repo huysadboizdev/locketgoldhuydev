@@ -12,6 +12,7 @@ os.environ["LOCKET_DB"] = temp_db_path
 os.environ["FLASK_SECRET_KEY"] = "test-secret-coupon-popup-12345"
 os.environ["JWT_SECRET"] = "test-jwt-secret-coupon-popup-12345678"
 os.environ["REFRESH_TOKEN_PEPPER"] = "test-pepper-coupon-popup-123"
+os.environ["ADMIN_EMAIL"] = "admin@locket.test"
 os.environ["ADMIN_USERNAME"] = "admin"
 os.environ["ADMIN_PASSWORD"] = "admin-secret-password-1234"
 os.environ["VIETQR_BANK_ID"] = "TPB"

@@ -19,6 +19,8 @@ import type {
   AdminCouponStatsResponse,
   AdminCreatorsResponse,
   AdminCreator,
+  AdminProviderStatus,
+  AdminProviderJobsResponse,
 } from '../types/admin';
 import type { AnnouncementPopup } from '../types/api';
 
@@ -267,6 +269,53 @@ export async function updateAdminCreator(creatorId: number, formData: FormData) 
 export async function deleteAdminCreator(creatorId: number) {
   return apiClient<{ success: boolean; msg: string }>(`/api/admin/creators/${creatorId}`, {
     method: 'DELETE',
+  });
+}
+
+// Activation Provider (LunaKey)
+export async function fetchAdminProviderStatus(): Promise<{ success: boolean; provider: AdminProviderStatus }> {
+  return apiClient<{ success: boolean; provider: AdminProviderStatus }>('/api/admin/provider/status');
+}
+
+export async function fetchAdminProviderJobs(params: {
+  status?: string;
+  q?: string;
+  page?: number;
+  limit?: number;
+} = {}): Promise<AdminProviderJobsResponse> {
+  const sp = new URLSearchParams();
+  if (params.status) sp.set('status', params.status);
+  if (params.q) sp.set('q', params.q);
+  if (params.page) sp.set('page', String(params.page));
+  if (params.limit) sp.set('limit', String(params.limit));
+  const query = sp.toString();
+  return apiClient<AdminProviderJobsResponse>(`/api/admin/provider/jobs${query ? `?${query}` : ''}`);
+}
+
+export async function retryAdminProviderJob(orderId: number, resetAttempts = false) {
+  return apiClient<{ success: boolean; job: any; msg?: string }>(
+    `/api/admin/provider/jobs/${orderId}/retry`,
+    { method: 'POST', body: JSON.stringify({ reset_attempts: resetAttempts }) }
+  );
+}
+
+export async function reconcileAdminProviderJob(orderId: number, outcome: 'completed' | 'failed', note: string) {
+  return apiClient<{ success: boolean; job: any; msg?: string }>(
+    `/api/admin/provider/jobs/${orderId}/reconcile`,
+    { method: 'POST', body: JSON.stringify({ outcome, note }) }
+  );
+}
+
+export async function pauseAdminProvider(reason: string) {
+  return apiClient<{ success: boolean; provider: AdminProviderStatus }>('/api/admin/provider/pause', {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export async function resumeAdminProvider() {
+  return apiClient<{ success: boolean; provider: AdminProviderStatus }>('/api/admin/provider/resume', {
+    method: 'POST',
   });
 }
 

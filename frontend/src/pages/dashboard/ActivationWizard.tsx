@@ -7,6 +7,7 @@ import {
   FulfillmentMode,
   CouponQuote,
   GoldCheckResponse,
+  LunakeyProfile,
 } from '../../types/api';
 import {
   fetchUserInfo,
@@ -21,6 +22,8 @@ import {
   createMobileconfigDownloadTicket,
   createApkDownloadTicket,
   fetchQueueStatus,
+  lunakeyLookup,
+  fetchOrderDetail,
 } from '../../api/endpoints';
 import { PlanCatalog } from './PlanCatalog';
 import { PaymentQrPanel, PaymentQrData } from '../../components/payment/PaymentQrPanel';
@@ -45,6 +48,8 @@ import {
   ShieldAlert,
   Ticket,
   Tag,
+  User,
+  Crown,
 } from 'lucide-react';
 
 interface ActivationWizardProps {
@@ -77,6 +82,25 @@ export const getGoldBlockMessage = (gold: GoldCheckResponse): string | null => {
     return 'Đơn của tài khoản này đang được xử lý. Vui lòng chờ hoàn tất hoặc liên hệ admin.';
   }
   // is_renewal=true or timeout → ALLOW purchase
+  return null;
+};
+
+/**
+ * Remaining Gold days for a provider profile. Prefers the provider's
+ * `gold_days_left`; falls back to computing from `gold_expiry`; returns null
+ * when neither is usable (never NaN/undefined).
+ */
+export const goldDaysLeft = (
+  profile?: { gold_days_left?: number | null; gold_expiry?: string | null } | null
+): number | null => {
+  if (!profile) return null;
+  if (typeof profile.gold_days_left === 'number' && Number.isFinite(profile.gold_days_left)) {
+    return Math.max(0, profile.gold_days_left);
+  }
+  if (profile.gold_expiry) {
+    const ms = new Date(profile.gold_expiry).getTime();
+    if (Number.isFinite(ms)) return Math.max(0, Math.ceil((ms - Date.now()) / 86_400_000));
+  }
   return null;
 };
 
@@ -130,6 +154,10 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
   const lastAutoQrSignatureRef = useRef<string | null>(null);
   const coinAttemptRef = useRef<{ key: string; signature: string } | null>(null);
   const notifiedPurchasesRef = useRef<Set<string>>(new Set());
+  // Monotonic id for username lookups. Any plan/platform/username change bumps
+  // it so a slow response from a previous request cannot overwrite the newer
+  // selection or re-install an invalidated confirmation token.
+  const lookupSeqRef = useRef(0);
 
   // Completed activation state
   const [activationOrderId, setActivationOrderId] = useState<number | null>(null);
@@ -137,6 +165,16 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
   const [queueStatus, setQueueStatus] = useState<string>('waiting');
   const [queuePosition, setQueuePosition] = useState<number>(0);
   const [queueError, setQueueError] = useState<string | null>(null);
+
+  // LunaKey provider state
+  const [lunakeyToken, setLunakeyToken] = useState<string | null>(null);
+  const [lunakeyProfile, setLunakeyProfile] = useState<LunakeyProfile | null>(null);
+  const [legacyGold, setLegacyGold] = useState<GoldCheckResponse | null>(null);
+  const [avatarError, setAvatarError] = useState(false);
+  const [providerStatus, setProviderStatus] = useState<string | null>(null);
+  const [providerStatusLabel, setProviderStatusLabel] = useState<string | null>(null);
+
+  const isLunakeyPlan = selectedPlan?.activation_provider === 'lunakey';
 
   // Platform DNS config & download tickets
   const [platformConfig, setPlatformConfig] = useState<PublicDnsConfig | null>(null);
@@ -217,6 +255,8 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
 
   // Step 1: Select plan
   const handleSelectPlan = (plan: PlanItem) => {
+    lookupSeqRef.current += 1;
+    setIsVerifyingUser(false);
     setSelectedPlan(plan);
     setCouponInput('');
     setAppliedCoupon(null);
@@ -232,6 +272,12 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
     lastAutoQrSignatureRef.current = null;
     coinAttemptRef.current = null;
     setPaymentError(null);
+    setLunakeyToken(null);
+    setLunakeyProfile(null);
+    setLegacyGold(null);
+    setAvatarError(false);
+    setProviderStatus(null);
+    setProviderStatusLabel(null);
 
     // If plan only supports a specific platform, auto-select or validate
     if (plan.supported_platforms === 'ios') {
@@ -248,6 +294,8 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
 
   // Step 2: Select platform
   const handleSelectPlatform = (platform: DevicePlatform) => {
+    lookupSeqRef.current += 1;
+    setIsVerifyingUser(false);
     if (selectedPlan) {
       if (selectedPlan.supported_platforms !== 'all' && selectedPlan.supported_platforms !== platform) {
         return;
@@ -264,6 +312,12 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
     qrAttemptRef.current = null;
     coinAttemptRef.current = null;
     setPaymentError(null);
+    setLunakeyToken(null);
+    setLunakeyProfile(null);
+    setLegacyGold(null);
+    setAvatarError(false);
+    setProviderStatus(null);
+    setProviderStatusLabel(null);
     if (selectedPlan) setCurrentStep(stepAfterPlatform(selectedPlan, platform));
   };
 
@@ -274,11 +328,59 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
       setUserVerifyError('Vui lòng nhập Username hoặc link lời mời Locket.');
       return;
     }
+    // Claim a new lookup id. Any plan/platform/username change bumps the same
+    // ref, so a slower response from a previous request is discarded instead of
+    // overwriting the newer selection or re-installing a stale token.
+    const seq = (lookupSeqRef.current += 1);
+    const isCurrent = () => lookupSeqRef.current === seq;
     setIsVerifyingUser(true);
     setUserVerifyError(null);
+    setAvatarError(false);
+
+    // LunaKey plans resolve the profile through the provider and receive a
+    // server-side lookup token. The client never supplies a UID.
+    if (isLunakeyPlan && selectedPlan) {
+      try {
+        const res = await lunakeyLookup(selectedPlan.id, raw);
+        if (!isCurrent()) return;
+        if (res && res.success && res.lookup_token && res.profile) {
+          setLunakeyProfile(res.profile);
+          setUserInfo({
+            uid: res.profile.uid || '',
+            username: res.profile.username || raw,
+            first_name: res.profile.name || 'Locket',
+            last_name: '',
+            profile_picture_url: res.profile.avatar || '',
+          });
+          // The backend blocks an account that already has Gold unless the plan
+          // allows renewal. Mirror it here: show the profile + Gold status, but
+          // do not keep a token that would let the purchase proceed.
+          const blocked = res.profile.has_gold !== false && !selectedPlan.existing_gold_supported;
+          setLunakeyToken(blocked ? null : res.lookup_token);
+          if (blocked) {
+            setUserVerifyError('Tài khoản đang có Gold. Gói này chưa hỗ trợ gia hạn — vui lòng chọn gói gia hạn.');
+          }
+        } else {
+          setUserVerifyError(res.msg || 'Không tìm thấy tài khoản Locket. Vui lòng kiểm tra lại.');
+          setUserInfo(null);
+          setLunakeyToken(null);
+          setLunakeyProfile(null);
+        }
+      } catch (err: any) {
+        if (!isCurrent()) return;
+        setUserVerifyError(err.message || 'Lỗi kết nối khi tra cứu tài khoản.');
+        setUserInfo(null);
+        setLunakeyToken(null);
+        setLunakeyProfile(null);
+      } finally {
+        if (isCurrent()) setIsVerifyingUser(false);
+      }
+      return;
+    }
 
     try {
       const res = await fetchUserInfo(raw);
+      if (!isCurrent()) return;
       if (res && res.success && res.data) {
         let gold: GoldCheckResponse;
         try {
@@ -287,6 +389,8 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
           // Fail-open: API unreachable → allow purchase (treat as new user)
           gold = { success: true, is_gold: false, already_registered: false, blocked: false, error: null, is_renewal: false };
         }
+        if (!isCurrent()) return;
+        setLegacyGold(gold);
         const blockMessage = getGoldBlockMessage(gold);
         if (blockMessage) {
           setUserVerifyError(blockMessage);
@@ -300,10 +404,11 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
         setUserInfo(null);
       }
     } catch (err: any) {
+      if (!isCurrent()) return;
       setUserVerifyError(err.message || 'Lỗi kết nối khi xác thực tài khoản.');
       setUserInfo(null);
     } finally {
-      setIsVerifyingUser(false);
+      if (isCurrent()) setIsVerifyingUser(false);
     }
   };
 
@@ -411,7 +516,7 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
 
     try {
       const couponCode = appliedCoupon?.code;
-      const signature = `${selectedPlan.id}:${selectedPlatform}:${fulfillmentMode}:${usernameInput.trim()}:${contactZalo.trim()}:${contactFacebook.trim()}:${couponCode || ''}`;
+      const signature = `${selectedPlan.id}:${selectedPlatform}:${fulfillmentMode}:${usernameInput.trim()}:${contactZalo.trim()}:${contactFacebook.trim()}:${couponCode || ''}:${lunakeyToken || ''}`;
       const previousAttempt = coinAttemptRef.current;
       const idempotencyKey =
         previousAttempt?.signature === signature
@@ -426,6 +531,7 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
         contact_facebook: contactFacebook.trim(),
         idempotency_key: idempotencyKey,
         coupon_code: couponCode,
+        lookup_token: lunakeyToken || undefined,
       });
 
       if (res && res.success) {
@@ -464,7 +570,7 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
 
     try {
       const couponCode = appliedCoupon?.code;
-      const signature = `${selectedPlan.id}:${selectedPlatform}:${fulfillmentMode}:${usernameInput.trim()}:${contactZalo.trim()}:${contactFacebook.trim()}:${couponCode || ''}`;
+      const signature = `${selectedPlan.id}:${selectedPlatform}:${fulfillmentMode}:${usernameInput.trim()}:${contactZalo.trim()}:${contactFacebook.trim()}:${couponCode || ''}:${lunakeyToken || ''}`;
       const previousAttempt = qrAttemptRef.current;
       const idempotencyKey =
         previousAttempt?.signature === signature
@@ -479,6 +585,7 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
         contact_facebook: contactFacebook.trim(),
         idempotency_key: idempotencyKey,
         coupon_code: couponCode,
+        lookup_token: lunakeyToken || undefined,
       });
 
       if (res && res.success) {
@@ -515,7 +622,7 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
   // Auto create QR order when entering payment step if user chooses QR
   useEffect(() => {
     if (currentStep === 'payment' && paymentMethod === 'qr' && !qrOrder && !isProcessingPayment) {
-      const signature = `${selectedPlan?.id || ''}:${selectedPlatform || ''}:${fulfillmentMode || ''}:${usernameInput.trim()}:${contactZalo.trim()}:${contactFacebook.trim()}:${appliedCoupon?.code || ''}`;
+      const signature = `${selectedPlan?.id || ''}:${selectedPlatform || ''}:${fulfillmentMode || ''}:${usernameInput.trim()}:${contactZalo.trim()}:${contactFacebook.trim()}:${appliedCoupon?.code || ''}:${lunakeyToken || ''}`;
       if (lastAutoQrSignatureRef.current !== signature) {
         lastAutoQrSignatureRef.current = signature;
         void handleCreateQrPayment();
@@ -526,7 +633,7 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
   // Auto create QR order when entering payment step if user chooses QR
   useEffect(() => {
     if (currentStep === 'payment' && paymentMethod === 'qr' && !qrOrder && !isProcessingPayment) {
-      const signature = `${selectedPlan?.id || ''}:${selectedPlatform || ''}:${fulfillmentMode || ''}:${usernameInput.trim()}:${contactZalo.trim()}:${contactFacebook.trim()}:${appliedCoupon?.code || ''}`;
+      const signature = `${selectedPlan?.id || ''}:${selectedPlatform || ''}:${fulfillmentMode || ''}:${usernameInput.trim()}:${contactZalo.trim()}:${contactFacebook.trim()}:${appliedCoupon?.code || ''}:${lunakeyToken || ''}`;
       if (lastAutoQrSignatureRef.current !== signature) {
         lastAutoQrSignatureRef.current = signature;
         void handleCreateQrPayment();
@@ -630,6 +737,48 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
     return () => clearTimeout(timerId);
   }, [currentStep, fulfillmentMode, queueClientId, queueStatus]);
 
+  // LunaKey provider status polling (no legacy queue involved).
+  useEffect(() => {
+    if (currentStep !== 'completed' || !isLunakeyPlan || !activationOrderId) return;
+    let cancelled = false;
+    let timerId: any = null;
+
+    const pollProvider = async () => {
+      let terminal = false;
+      try {
+        const res = await fetchOrderDetail(activationOrderId);
+        if (!cancelled && res && res.success && res.order) {
+          const ps = res.order.provider_status || null;
+          setProviderStatus(ps);
+          setProviderStatusLabel(res.order.provider_status_label || null);
+          const isTerminal = ['completed', 'failed', 'refunded', 'cancelled'].includes(ps || '');
+          setQueueStatus(
+            ps === 'completed' ? 'completed' : isTerminal ? 'error' : 'processing'
+          );
+          if (ps === 'failed') {
+            setQueueError('Kích hoạt không thành công. Vui lòng liên hệ hỗ trợ để được xử lý.');
+          } else if (ps === 'refunded') {
+            setQueueError('Đơn đã được hoàn Coin. Bạn không cần thanh toán lại.');
+          } else if (ps === 'cancelled') {
+            setQueueError('Đơn đã bị hủy.');
+          }
+          terminal = isTerminal;
+        }
+      } catch {
+        // Keep polling on transient errors.
+      }
+      if (!cancelled && !terminal) {
+        timerId = setTimeout(pollProvider, 3000);
+      }
+    };
+
+    timerId = setTimeout(pollProvider, 2000);
+    return () => {
+      cancelled = true;
+      clearTimeout(timerId);
+    };
+  }, [currentStep, isLunakeyPlan, activationOrderId]);
+
   // Request download ticket on completion
   const handleRequestDownloadTicket = async () => {
     if (!activationOrderId && !queueClientId) return;
@@ -658,6 +807,8 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
   };
 
   const handleReset = () => {
+    lookupSeqRef.current += 1;
+    setIsVerifyingUser(false);
     setCurrentStep('plan');
     setSelectedPlan(null);
     setSelectedPlatform(null);
@@ -678,7 +829,37 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
     setActivationOrderId(null);
     setQueueClientId(null);
     setQueueStatus('waiting');
+    setLunakeyToken(null);
+    setLunakeyProfile(null);
+    setLegacyGold(null);
+    setAvatarError(false);
+    setProviderStatus(null);
+    setProviderStatusLabel(null);
   };
+
+  // ---- Lookup card model (LunaKey provider profile; legacy fallback) ----
+  const cardName = (
+    lunakeyProfile?.name
+    || [userInfo?.first_name, userInfo?.last_name].filter(Boolean).join(' ')
+    || userInfo?.username
+    || ''
+  ).trim();
+  const cardUsername = (lunakeyProfile?.username || userInfo?.username || usernameInput.trim()).replace(/^@+/, '');
+  const cardAvatar = lunakeyProfile?.avatar || userInfo?.profile_picture_url || null;
+  const cardUid = lunakeyProfile?.uid || userInfo?.uid || null;
+  const hasGold: boolean | null = lunakeyProfile
+    ? (typeof lunakeyProfile.has_gold === 'boolean' ? lunakeyProfile.has_gold : null)
+    : (legacyGold ? legacyGold.is_gold : null);
+  const goldExpiry = lunakeyProfile?.gold_expiry || legacyGold?.expires_date || null;
+  const expiryMs = goldExpiry ? new Date(goldExpiry).getTime() : NaN;
+  const hasValidExpiry = Number.isFinite(expiryMs);
+  const goldExpired = hasValidExpiry && expiryMs < Date.now();
+  const daysLeft = goldDaysLeft({
+    gold_days_left: lunakeyProfile?.gold_days_left ?? null,
+    gold_expiry: hasValidExpiry ? goldExpiry : null,
+  });
+  const liveGold = hasGold === true && !goldExpired;
+  const canProceedWithGold = !isLunakeyPlan || Boolean(lunakeyToken);
 
   return (
     <div className="space-y-5">
@@ -830,79 +1011,152 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
         </div>
       )}
 
-      {/* Step 3: Nhập Username (cho auto_activation) */}
+      {/* Step 3: Tra cứu tài khoản Locket (auto_activation) */}
       {currentStep === 'username' && selectedPlan && selectedPlatform && (
         <div className="space-y-5 max-w-3xl">
           <div>
             <h3 className="text-base sm:text-lg font-bold text-zinc-900 dark:text-white">
-              Bước {currentStepNumber}: Nhập tài khoản Locket
+              Bước {currentStepNumber}: Tra cứu tài khoản Locket
             </h3>
             <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              Nhập username Locket chính xác hoặc liên kết lời mời bạn bè để hệ thống kiểm tra và kích hoạt.
+              Nhập username hoặc liên kết Locket để kiểm tra thông tin và trạng thái Gold.
             </p>
           </div>
 
           <div className="space-y-3">
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={usernameInput}
-                onChange={(e) => {
-                  setUsernameInput(e.target.value);
-                  setUserInfo(null);
-                  setUserVerifyError(null);
-                }}
-                placeholder="VD: huydev hoặc locket.cam/huydev"
-                disabled={isVerifyingUser}
-                className="flex-1 rounded-2xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-4 py-3 text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
-              />
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <label htmlFor="lk-username-input" className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                @ Nhập Username hoặc Liên kết Locket:
+              </label>
+              <span className="text-[11px] text-zinc-400">Hỗ trợ link: locket.camera/links/...</span>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2">
+              <div className="relative flex-1">
+                <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
+                <input
+                  id="lk-username-input"
+                  type="text"
+                  value={usernameInput}
+                  onChange={(e) => {
+                    lookupSeqRef.current += 1;
+                    setUsernameInput(e.target.value);
+                    setUserInfo(null);
+                    setUserVerifyError(null);
+                    // Changing the input invalidates the server-side confirmation.
+                    setLunakeyToken(null);
+                    setLunakeyProfile(null);
+                    setLegacyGold(null);
+                    setAvatarError(false);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !isVerifyingUser && usernameInput.trim()) {
+                      e.preventDefault();
+                      void handleVerifyUsername();
+                    }
+                  }}
+                  placeholder="VD: huydev204 hoặc https://locket.camera/links/..."
+                  disabled={isVerifyingUser}
+                  className="w-full rounded-2xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 pl-9 pr-4 py-3 text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                />
+              </div>
               <button
                 type="button"
                 disabled={isVerifyingUser || !usernameInput.trim()}
                 onClick={handleVerifyUsername}
-                className="gold-secondary rounded-2xl border px-4 py-3 text-xs font-bold flex items-center gap-1.5 transition-all disabled:opacity-50"
+                className="gold-primary shrink-0 rounded-2xl px-5 py-3 text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50"
               >
                 {isVerifyingUser ? (
-                  <Loader2 className="h-4 w-4 animate-spin text-amber-500" />
+                  <Loader2 className="h-4 w-4 animate-spin text-zinc-950" />
                 ) : (
                   <Search className="h-4 w-4" />
                 )}
-                <span>Kiểm tra</span>
+                <span>Tra cứu</span>
               </button>
             </div>
 
             {userVerifyError && (
-              <p className="flex items-center gap-1.5 text-xs text-rose-600 dark:text-rose-400">
+              <p role="alert" className="flex items-center gap-1.5 text-xs text-rose-600 dark:text-rose-400">
                 <AlertCircle className="h-4 w-4 shrink-0" />
                 <span>{userVerifyError}</span>
               </p>
             )}
 
-            {/* Verified User Preview Card */}
+            {/* Profile card — every field comes from the provider response */}
             {userInfo && (
-              <div className="flex items-center gap-3.5 rounded-2xl border border-emerald-500/30 bg-emerald-50/50 dark:bg-emerald-950/20 p-4">
-                {userInfo.profile_picture_url ? (
-                  <img
-                    src={userInfo.profile_picture_url}
-                    alt={userInfo.username}
-                    className="h-11 w-11 rounded-full object-cover border border-emerald-500/40"
-                  />
-                ) : (
-                  <div className="flex h-11 w-11 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 font-bold text-sm">
-                    {userInfo.username.charAt(0).toUpperCase()}
+              <div className="overflow-hidden rounded-3xl border border-amber-500/40 bg-white dark:bg-zinc-900/70">
+                <div className="flex items-center gap-3.5 p-4">
+                  {cardAvatar && !avatarError ? (
+                    <img
+                      src={cardAvatar}
+                      alt={cardUsername || 'Locket avatar'}
+                      onError={() => setAvatarError(true)}
+                      className="h-14 w-14 shrink-0 rounded-full border-2 border-amber-500/40 object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-amber-500/20 text-lg font-bold text-amber-600 dark:text-amber-400">
+                      {(cardUsername || 'L').charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="truncate text-sm font-bold text-zinc-900 dark:text-white sm:text-base">
+                        {cardName || cardUsername || 'Locket User'}
+                      </span>
+                      <span className="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                        @{cardUsername || 'unknown'}
+                      </span>
+                    </div>
+                    <p className="mt-1 break-all text-[11px] text-zinc-500 dark:text-zinc-400">
+                      UID: {cardUid || '—'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Gold status bar */}
+                {hasGold !== null && (
+                  <div className="flex flex-col gap-2 border-t border-amber-500/30 bg-amber-500/[0.06] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      {liveGold ? (
+                        <span className="flex items-center gap-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400 sm:text-sm">
+                          <Crown className="h-4 w-4 shrink-0" />
+                          Đang có Locket Gold{daysLeft != null ? ` (${daysLeft} ngày còn lại)` : ''}
+                        </span>
+                      ) : hasGold === true ? (
+                        <span className="flex items-center gap-1.5 text-xs font-semibold text-rose-600 dark:text-rose-400 sm:text-sm">
+                          <AlertCircle className="h-4 w-4 shrink-0" />
+                          Locket Gold đã hết hạn
+                        </span>
+                      ) : (
+                        <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 sm:text-sm">
+                          Chưa có Locket Gold
+                        </span>
+                      )}
+                      {hasValidExpiry && (
+                        <span className="mt-0.5 block text-[11px] font-normal text-zinc-500 dark:text-zinc-400">
+                          Hết hạn: {new Date(expiryMs).toLocaleDateString('vi-VN')}
+                        </span>
+                      )}
+                    </div>
+                    {hasGold === true && (
+                      <button
+                        type="button"
+                        disabled={!canProceedWithGold || isVerifyingUser}
+                        onClick={() => {
+                          if (canProceedWithGold) setCurrentStep('payment');
+                        }}
+                        className="gold-secondary shrink-0 rounded-xl border px-3 py-1.5 text-[11px] font-bold transition-all disabled:opacity-50"
+                      >
+                        Gia hạn thêm
+                      </button>
+                    )}
                   </div>
                 )}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs sm:text-sm font-bold text-zinc-900 dark:text-white truncate">
-                      {userInfo.first_name} {userInfo.last_name}
-                    </span>
-                    <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
-                  </div>
-                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                    @{userInfo.username} · UID: {userInfo.uid ? `${userInfo.uid.slice(0, 10)}...` : 'Hợp lệ'}
+                {hasGold === true && isLunakeyPlan && !lunakeyToken && (
+                  <p className="px-4 pb-3 text-[11px] text-zinc-500 dark:text-zinc-400">
+                    Gói này chưa hỗ trợ gia hạn tài khoản đang có Gold. Vui lòng chọn gói gia hạn.
                   </p>
-                </div>
+                )}
               </div>
             )}
           </div>
@@ -919,9 +1173,9 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
 
             <button
               type="button"
-              disabled={!userInfo || isVerifyingUser}
+              disabled={!userInfo || isVerifyingUser || !canProceedWithGold}
               onClick={() => {
-                if (!userInfo) return;
+                if (!userInfo || !canProceedWithGold) return;
                 setCurrentStep('payment');
               }}
               className="gold-primary rounded-2xl px-6 py-3 text-xs sm:text-sm font-bold flex items-center gap-2 transition-all disabled:opacity-50"
@@ -1333,6 +1587,18 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
                     : 'Đã gửi đơn tới Admin!'
                   : fulfillmentMode === 'apk_download'
                   ? 'Thanh toán thành công — APK đã sẵn sàng!'
+                  : isLunakeyPlan
+                  ? providerStatus === 'completed'
+                    ? 'Kích hoạt Locket Gold thành công!'
+                    : providerStatus === 'failed'
+                    ? 'Kích hoạt không thành công'
+                    : providerStatus === 'refunded'
+                    ? 'Đơn đã được hoàn Coin'
+                    : providerStatus === 'cancelled'
+                    ? 'Đơn đã bị hủy'
+                    : providerStatus === 'awaiting_reconciliation'
+                    ? 'Đang kiểm tra kết quả kích hoạt'
+                    : 'Đang xử lý kích hoạt qua LunaKey'
                   : queueStatus === 'completed'
                   ? 'Kích hoạt Locket Gold thành công!'
                   : queueStatus === 'error'
@@ -1350,10 +1616,30 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
               </p>
             </div>
 
-            {/* Queue position badge (auto_activation only) */}
-            {fulfillmentMode === 'auto_activation' && queueStatus !== 'completed' && queueStatus !== 'error' && (
+            {/* Queue position badge (legacy auto_activation only) */}
+            {fulfillmentMode === 'auto_activation' && !isLunakeyPlan && queueStatus !== 'completed' && queueStatus !== 'error' && (
               <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-50 dark:bg-amber-950/40 px-4 py-1.5 text-xs text-amber-800 dark:text-amber-300">
                 <span>Vị trí trong hàng đợi: <strong>#{queuePosition || 1}</strong></span>
+              </div>
+            )}
+
+            {/* LunaKey provider status badge */}
+            {isLunakeyPlan && (
+              <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-50 dark:bg-amber-950/40 px-4 py-1.5 text-xs text-amber-800 dark:text-amber-300">
+                <span>
+                  {providerStatusLabel
+                    || (providerStatus === 'completed'
+                      ? 'Thành công'
+                      : providerStatus === 'failed'
+                      ? 'Thất bại'
+                      : providerStatus === 'refunded'
+                      ? 'Đã hoàn Coin'
+                      : providerStatus === 'cancelled'
+                      ? 'Đã hủy'
+                      : providerStatus === 'awaiting_reconciliation'
+                      ? 'Đang kiểm tra kết quả'
+                      : 'Đang xử lý')}
+                </span>
               </div>
             )}
 
@@ -1449,6 +1735,58 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
                 <p className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
                   Gói APK hoạt động độc lập và <strong>không yêu cầu cấu hình DNS</strong>. Nếu thiết bị đã có phiên bản Locket từ Google Play Store, vui lòng gỡ cài đặt trước để tránh xung đột chữ ký ứng dụng.
                 </p>
+              </div>
+            </div>
+          ) : isLunakeyPlan ? (
+            /* LUNAKEY PROVIDER VIEW — no DNS / mobileconfig required */
+            <div className="rounded-3xl border border-amber-200 dark:border-amber-900/60 bg-white dark:bg-zinc-900/60 p-6 space-y-4">
+              <div className="flex items-center gap-2">
+                {providerStatus === 'completed' ? (
+                  <CheckCircle2 className="h-5 w-5 text-emerald-500 shrink-0" />
+                ) : ['failed', 'refunded', 'cancelled'].includes(providerStatus || '') ? (
+                  <AlertCircle className="h-5 w-5 text-rose-500 shrink-0" />
+                ) : (
+                  <Loader2 className="h-5 w-5 animate-spin text-amber-500 shrink-0" />
+                )}
+                <h4 className="text-sm sm:text-base font-bold text-zinc-900 dark:text-white">
+                  {providerStatus === 'completed'
+                    ? 'Kích hoạt hoàn tất'
+                    : providerStatus === 'failed'
+                    ? 'Kích hoạt chưa thành công'
+                    : providerStatus === 'refunded'
+                    ? 'Đơn đã được hoàn Coin'
+                    : providerStatus === 'cancelled'
+                    ? 'Đơn đã bị hủy'
+                    : 'Hệ thống đang kích hoạt Gold cho tài khoản của bạn'}
+                </h4>
+              </div>
+
+              <p className="text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
+                {providerStatus === 'completed'
+                  ? 'Tài khoản Locket của bạn đã được kích hoạt Gold. Bạn không cần cài đặt DNS hay tải profile — hãy mở lại ứng dụng Locket để kiểm tra.'
+                  : providerStatus === 'failed'
+                  ? 'Đơn đã thanh toán nhưng chưa kích hoạt được. Đội ngũ hỗ trợ sẽ kiểm tra và xử lý; bạn không cần thanh toán lại.'
+                  : providerStatus === 'refunded'
+                  ? 'Đơn đã được hoàn Coin. Bạn không cần thanh toán lại; nếu cần hỗ trợ thêm vui lòng liên hệ shop.'
+                  : providerStatus === 'cancelled'
+                  ? 'Đơn đã bị hủy. Vui lòng liên hệ hỗ trợ nếu bạn muốn tạo đơn mới.'
+                  : 'Đơn đã được thanh toán và đang gửi tới nguồn kích hoạt. Quá trình này có thể mất ít phút; bạn có thể đóng trang và xem lại trong mục Đơn kích hoạt.'}
+              </p>
+
+              {lunakeyProfile?.gold_expiry && queueStatus === 'completed' && (
+                <div className="rounded-2xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/60 dark:bg-emerald-950/20 p-3.5 text-xs text-emerald-800 dark:text-emerald-300">
+                  Hạn Gold ghi nhận: <strong>{new Date(lunakeyProfile.gold_expiry).toLocaleString('vi-VN')}</strong>
+                </div>
+              )}
+
+              {selectedPlan?.warranty_months ? (
+                <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 p-3.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                  Bảo hành hiển thị theo chính sách của shop: <strong>{selectedPlan.warranty_months} tháng</strong>. Hạn Gold do nhà cung cấp quyết định và hiển thị riêng khi có thông tin.
+                </div>
+              ) : null}
+
+              <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 p-3.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                Bạn có thể đóng trang này bất cứ lúc nào. Trạng thái mới nhất luôn được cập nhật trong mục <strong>Đơn kích hoạt</strong>.
               </div>
             </div>
           ) : selectedPlatform === 'ios' ? (

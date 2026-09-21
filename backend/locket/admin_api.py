@@ -433,6 +433,13 @@ def orders_list():
         limit=limit,
         offset=offset,
     )
+    for item in res["items"]:
+        if (item.get("activation_provider_snapshot") or "legacy_locket") == "lunakey":
+            job = db.get_provider_job_by_order(item["id"])
+            if job:
+                item["provider_job_status"] = job.get("status")
+                item["provider_job_attempts"] = job.get("attempt_count")
+                item["provider_job_error"] = job.get("last_error_msg")
     envelope = make_list_envelope(res["items"], res["total"], limit, offset, legacy_key="orders")
     envelope["manual_pending_count"] = db.get_manual_pending_orders_count()
     return jsonify(envelope)
@@ -586,7 +593,13 @@ def manual_order_refund(order_id: int):
 @admin_api_bp.route("/plans", methods=["GET"])
 @admin_token_required
 def plans_list():
+    from . import lunakey_service
+
     plans = db.list_all_plans_admin()
+    for plan in plans:
+        issues = lunakey_service.plan_readiness(plan)
+        plan["readiness_issues"] = issues
+        plan["sellable"] = not issues
     limit = max(1, len(plans))
     return jsonify(make_list_envelope(plans, len(plans), limit, 0, legacy_key="plans"))
 
@@ -612,6 +625,13 @@ def plans_create():
     inventory_status = data.get("inventory_status", "in_stock")
     ios_fulfillment_mode = data.get("ios_fulfillment_mode")
     android_fulfillment_mode = data.get("android_fulfillment_mode")
+    activation_provider = (data.get("activation_provider") or "legacy_locket").strip().lower()
+    provider_category = data.get("provider_category")
+    warranty_months = data.get("warranty_months")
+    warranty_policy = data.get("warranty_policy")
+    allow_existing_gold, bool_error = _json_bool(data, "allow_existing_gold", default=False)
+    if bool_error:
+        return bool_error
 
     if not name or not slug or not product_id:
         return jsonify({"success": False, "error": "validation_error", "msg": "Tên, slug và product ID là bắt buộc."}), 400
@@ -647,6 +667,11 @@ def plans_create():
             inventory_status=inventory_status,
             ios_fulfillment_mode=ios_fulfillment_mode,
             android_fulfillment_mode=android_fulfillment_mode,
+            activation_provider=activation_provider,
+            provider_category=provider_category,
+            warranty_months=warranty_months,
+            warranty_policy=warranty_policy,
+            allow_existing_gold=allow_existing_gold,
         )
         created = db.get_plan_by_id(plan_id, public=False)
         _audit("plan_create", "plan", plan_id, before=None, after=created)
@@ -666,7 +691,7 @@ def plans_update(plan_id: int):
         return jsonify({"success": False, "error": "not_found", "msg": "Không tìm thấy gói cần cập nhật."}), 404
 
     data = request.get_json(silent=True) or {}
-    for field in ("is_active", "is_popular"):
+    for field in ("is_active", "is_popular", "allow_existing_gold"):
         _, bool_error = _json_bool(data, field)
         if bool_error:
             return bool_error
@@ -2000,3 +2025,152 @@ def coupons_stats(coupon_id):
     if not stats:
         return jsonify({"success": False, "error": "not_found", "msg": "Không tìm thấy mã giảm giá."}), 404
     return jsonify({"success": True, "stats": stats, **stats})
+
+
+# ---- Activation Provider (LunaKey) ----
+
+@admin_api_bp.route("/orders/<int:order_id>/refund-coin", methods=["POST"])
+@admin_token_required
+def admin_refund_coin_order(order_id: int):
+    """Refund a confirmed-failed Coin order. Cancels any provider job first so a
+    refunded order can never be activated afterwards."""
+    data = request.get_json(silent=True) or {}
+    reason = (data.get("reason") or "").strip()
+    if len(reason) < 5:
+        return jsonify({"success": False, "error": "invalid_reason",
+                        "msg": "Vui lòng nhập lý do hoàn Coin (tối thiểu 5 ký tự)."}), 400
+    if len(reason) > 500:
+        return jsonify({"success": False, "error": "reason_too_long",
+                        "msg": "Lý do hoàn Coin không được vượt quá 500 ký tự."}), 400
+
+    status, result = db.refund_activation_order_coin(order_id, reason=reason)
+    if status == "error":
+        messages = {
+            "not_found": "Không tìm thấy đơn.",
+            "not_a_coin_order": "Đơn này không thanh toán bằng Coin.",
+        }
+        code = "not_found" if result == "not_found" else "refund_failed"
+        http = 404 if result == "not_found" else 400
+        return jsonify({"success": False, "error": code, "msg": messages.get(result, str(result))}), http
+    if status == "already_refunded":
+        return jsonify({"success": False, "error": "already_refunded", "msg": str(result)}), 409
+    if status != "ok":
+        return jsonify({"success": False, "error": "invalid_state_transition", "msg": str(result)}), 409
+
+    _audit("coin_order_refund", "activation_order", order_id, before=None, after=result)
+    return jsonify({"success": True, "result": result, "msg": "Đã hoàn Coin và hủy job kích hoạt."})
+
+
+@admin_api_bp.route("/provider/status", methods=["GET"])
+@admin_token_required
+def provider_status():
+    """Provider health/config summary. Never returns the API key."""
+    from . import lunakey_service
+
+    return jsonify({"success": True, "provider": lunakey_service.get_provider_status()})
+
+
+@admin_api_bp.route("/provider/jobs", methods=["GET"])
+@admin_token_required
+def provider_jobs_list():
+    from . import lunakey_service
+
+    status = request.args.get("status")
+    provider = request.args.get("provider")
+    query = request.args.get("q") or request.args.get("query")
+    limit, offset = _parse_pagination(50)
+    res = db.list_provider_jobs_admin(status=status, provider=provider, query=query,
+                                      limit=limit, offset=offset)
+    items = []
+    for row in res["items"]:
+        item = dict(row)
+        item.pop("payload_json", None)
+        items.append(item)
+    envelope = make_list_envelope(items, res["total"], limit, offset, legacy_key="jobs")
+    envelope["provider_status"] = lunakey_service.get_provider_status()
+    return jsonify(envelope)
+
+
+@admin_api_bp.route("/provider/jobs/<int:order_id>/retry", methods=["POST"])
+@admin_token_required
+def provider_job_retry(order_id: int):
+    """Requeue a job using the SAME request_id and payload. No new key."""
+    from . import lunakey_service
+
+    if lunakey_service.is_provider_paused():
+        return jsonify({
+            "success": False,
+            "error": "provider_paused",
+            "msg": "Nguồn LunaKey đang tạm dừng. Hãy xử lý cấu hình trước khi thử lại.",
+        }), 409
+
+    data = request.get_json(silent=True) or {}
+    reset_attempts = bool(data.get("reset_attempts"))
+    status, result = db.reset_provider_job_for_retry(order_id, reset_attempts=reset_attempts)
+    if status == "not_found":
+        return jsonify({"success": False, "error": "not_found", "msg": "Không tìm thấy job cho đơn này."}), 404
+    if status == "already_succeeded":
+        return jsonify({"success": False, "error": "already_succeeded", "msg": "Job đã thành công, không cần thử lại."}), 409
+    if status != "ok":
+        return jsonify({"success": False, "error": "retry_failed", "msg": str(result)}), 400
+
+    _audit("provider_job_retry", "provider_job", order_id, before=None,
+           after={"status": "pending", "reset_attempts": reset_attempts})
+    return jsonify({"success": True, "job": result, "msg": "Đã đưa job vào hàng đợi thử lại với cùng request_id."})
+
+
+@admin_api_bp.route("/provider/jobs/<int:order_id>/reconcile", methods=["POST"])
+@admin_token_required
+def provider_job_reconcile(order_id: int):
+    """Record a manual reconciliation conclusion for an unclear job."""
+    data = request.get_json(silent=True) or {}
+    outcome = (data.get("outcome") or "").strip().lower()
+    note = (data.get("note") or "").strip()
+    if outcome not in ("completed", "failed"):
+        return jsonify({"success": False, "error": "invalid_outcome",
+                        "msg": "Kết luận đối soát phải là 'completed' hoặc 'failed'."}), 400
+    if len(note) < 5:
+        return jsonify({"success": False, "error": "note_required",
+                        "msg": "Vui lòng nhập ghi chú đối soát (tối thiểu 5 ký tự)."}), 400
+    if len(note) > 500:
+        return jsonify({"success": False, "error": "note_too_long",
+                        "msg": "Ghi chú đối soát không được vượt quá 500 ký tự."}), 400
+
+    status, result = db.mark_provider_job_reconciled(order_id, outcome=outcome, note=note)
+    if status == "not_found":
+        return jsonify({"success": False, "error": "not_found", "msg": "Không tìm thấy job cho đơn này."}), 404
+    if status == "evidence_conflict":
+        return jsonify({
+            "success": False,
+            "error": "succeeded_evidence_conflict",
+            "msg": "Nguồn đã xác nhận kích hoạt thành công nên không thể kết luận thất bại. "
+                   "Hãy đối soát 'completed' hoặc xử lý hoàn tiền thiện chí theo quy trình riêng.",
+        }), 409
+    if status != "ok":
+        return jsonify({"success": False, "error": "reconcile_failed", "msg": str(result)}), 400
+
+    _audit("provider_job_reconcile", "provider_job", order_id, before=None,
+           after={"outcome": outcome, "note": note})
+    return jsonify({"success": True, "job": result, "msg": "Đã ghi nhận kết luận đối soát."})
+
+
+@admin_api_bp.route("/provider/pause", methods=["POST"])
+@admin_token_required
+def provider_pause():
+    from . import lunakey_service
+
+    data = request.get_json(silent=True) or {}
+    reason = (data.get("reason") or "admin_manual").strip()[:200]
+    state = lunakey_service.pause_provider(reason)
+    _audit("provider_pause", "provider", "lunakey", before=None, after=state)
+    return jsonify({"success": True, "provider": lunakey_service.get_provider_status()})
+
+
+@admin_api_bp.route("/provider/resume", methods=["POST"])
+@admin_token_required
+def provider_resume():
+    from . import lunakey_service
+
+    state = lunakey_service.resume_provider()
+    _audit("provider_resume", "provider", "lunakey", before=None, after=state)
+    return jsonify({"success": True, "provider": lunakey_service.get_provider_status()})

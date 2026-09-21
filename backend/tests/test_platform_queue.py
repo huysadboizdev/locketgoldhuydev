@@ -13,9 +13,14 @@ os.environ["LOCKET_DB"] = temp_db_path
 os.environ["FLASK_SECRET_KEY"] = "test-secret-platform-queue-key-12345"
 os.environ["JWT_SECRET"] = "test-jwt-secret-platform-queue-12345678"
 os.environ["REFRESH_TOKEN_PEPPER"] = "test-pepper-secret-platform-queue-123"
+os.environ["ADMIN_EMAIL"] = "admin@locket.test"
 os.environ["ADMIN_USERNAME"] = "admin"
 os.environ["ADMIN_PASSWORD"] = "admin-secret-password-1234"
 os.environ["NEXTDNS_PROFILE"] = "customprof123"
+
+# Keep generated download assets OUT of the tracked backend/locket/static dir.
+_assets_dir = tempfile.mkdtemp(prefix="locket-queue-assets-")
+os.environ["MOBILECONFIG_PATH"] = os.path.join(_assets_dir, "locket.mobileconfig")
 
 backend_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if backend_root not in sys.path:
@@ -53,10 +58,9 @@ class PlatformQueueComprehensiveTestCase(unittest.TestCase):
         # Mock rotator.size so /api/restore passes account availability check
         cls.app.rotator.size = lambda: 1
 
-        # Create static mobileconfig dummy file for download tests
-        static_dir = os.path.join(cls.app.root_path, "static")
-        os.makedirs(static_dir, exist_ok=True)
-        cls.mc_path = os.path.join(static_dir, "locket.mobileconfig")
+        # Create dummy mobileconfig in an isolated temp dir for download tests
+        os.makedirs(_assets_dir, exist_ok=True)
+        cls.mc_path = os.environ["MOBILECONFIG_PATH"]
         with open(cls.mc_path, "w", encoding="utf-8") as f:
             f.write("<plist>dummy mobileconfig content</plist>")
 

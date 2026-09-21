@@ -230,6 +230,47 @@ def notify_paid_order(order_id: int, payment: dict[str, Any] | None = None) -> b
     return _send_async(text, reply_markup)
 
 
+def notify_provider_result(order_id: int, outcome: str, message: str = "") -> bool:
+    """Best-effort notification for a LunaKey provider job result.
+
+    Never raises and never blocks the worker. ``outcome`` is one of
+    ``completed`` / ``failed`` / ``awaiting_reconciliation``.
+    """
+    if not _is_truthy_env("TELEGRAM_NOTIFY_PROVIDER_RESULTS") or not _telegram_config():
+        return False
+
+    from . import db
+
+    order = db.get_activation_order_by_id(order_id)
+    if not order:
+        return False
+    user = db.get_user_by_id(order.get("user_id")) or {}
+
+    titles = {
+        "completed": "KÍCH HOẠT LUNAKEY THÀNH CÔNG",
+        "failed": "KÍCH HOẠT LUNAKEY THẤT BẠI",
+        "awaiting_reconciliation": "LUNAKEY CẦN ĐỐI SOÁT",
+    }
+    lines = [
+        f"<b>{_escape(titles.get(outcome, 'CẬP NHẬT LUNAKEY'))}</b>",
+        "",
+        f"<b>Mã đơn:</b> <code>#{_escape(order_id)}</code>",
+        f"<b>Gói:</b> {_escape(order.get('plan_name_snapshot'))}",
+        f"<b>Locket:</b> @{_escape(order.get('provider_username') or order.get('locket_username'))}",
+    ]
+    if order.get("provider_order_code"):
+        lines.append(f"<b>Mã nguồn:</b> <code>{_escape(order.get('provider_order_code'))}</code>")
+    if message:
+        lines.append(f"<b>Ghi chú:</b> {_escape(message)}")
+    lines.append(f"<b>Thời gian:</b> {_escape(_format_time())}")
+
+    reply_markup = None
+    admin_url = _order_admin_url()
+    if admin_url:
+        reply_markup = {"inline_keyboard": [[{"text": "Mở đơn trong Admin", "url": admin_url}]]}
+    return _send_async("\n".join(lines), reply_markup)
+
+
 def send_telegram_notification(username, uid, product_id, raw_json):
     """Backward-compatible activation-success notification used by the worker."""
     if not _is_truthy_env("TELEGRAM_NOTIFY_ACTIVATION_SUCCESS"):

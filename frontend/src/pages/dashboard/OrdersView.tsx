@@ -58,6 +58,9 @@ const formatAccount = (order: ActivationOrder): string => {
 };
 
 const orderStatusLabel = (order: ActivationOrder) => {
+  if (order.provider === 'lunakey' && order.provider_status_label) {
+    return order.provider_status_label;
+  }
   if (order.fulfillment_mode_snapshot === 'manual_contact') {
     if (order.status === 'paid') return 'Chờ Admin tiếp nhận';
     if (order.status === 'processing') return 'Admin đang xử lý';
@@ -430,10 +433,59 @@ export const OrdersView: React.FC = () => {
                   {orderStatusLabel(selectedOrder)}
                 </span>
               </div>
+              {selectedOrder.provider === 'lunakey' && selectedOrder.warranty_months_snapshot ? (
+                <div className="flex justify-between">
+                  <span className="text-zinc-500">Bảo hành (theo shop):</span>
+                  <span className="font-semibold text-zinc-800 dark:text-zinc-200">
+                    {selectedOrder.warranty_months_snapshot} tháng
+                  </span>
+                </div>
+              ) : null}
+              {selectedOrder.provider === 'lunakey' && selectedOrder.provider_profile?.gold_expiry ? (
+                <div className="flex justify-between">
+                  <span className="text-zinc-500">Hạn Gold (nhà cung cấp):</span>
+                  <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                    {new Date(selectedOrder.provider_profile.gold_expiry).toLocaleString('vi-VN')}
+                  </span>
+                </div>
+              ) : null}
             </div>
 
             {/* Fulfillment Specific Guides */}
-            {selectedOrder.fulfillment_mode_snapshot === 'manual_contact' ? (
+            {selectedOrder.provider === 'lunakey' ? (
+              /* LUNAKEY VIEW — no DNS / mobileconfig */
+              <div className="rounded-2xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/40 dark:bg-amber-950/20 p-4 space-y-3">
+                <div className="flex items-center justify-between border-b border-amber-200/50 dark:border-amber-900/40 pb-2">
+                  <div className="flex items-center gap-2 text-amber-700 dark:text-amber-300 font-bold text-xs">
+                    {selectedOrder.status === 'completed' ? (
+                      <CheckCircle2 className="h-4 w-4" />
+                    ) : ['failed', 'refunded', 'cancelled'].includes(selectedOrder.status) ? (
+                      <Clock className="h-4 w-4" />
+                    ) : (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    )}
+                    <span>Kích hoạt qua LunaKey</span>
+                  </div>
+                  <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400">Không cần DNS</span>
+                </div>
+                <p className="text-xs text-zinc-600 dark:text-zinc-300">
+                  {selectedOrder.status === 'completed'
+                    ? 'Tài khoản Locket của bạn đã được kích hoạt Gold. Không cần cài đặt DNS hay tải profile — hãy mở lại ứng dụng Locket để kiểm tra.'
+                    : selectedOrder.status === 'failed'
+                    ? 'Đơn đã thanh toán nhưng chưa kích hoạt được. Đội ngũ hỗ trợ sẽ kiểm tra và xử lý; bạn không cần thanh toán lại.'
+                    : selectedOrder.status === 'refunded'
+                    ? 'Đơn đã được hoàn Coin. Bạn không cần thanh toán lại; liên hệ shop nếu cần hỗ trợ thêm.'
+                    : selectedOrder.status === 'cancelled'
+                    ? 'Đơn đã bị hủy. Vui lòng liên hệ hỗ trợ nếu bạn muốn tạo đơn mới.'
+                    : 'Đơn đã thanh toán và đang được xử lý qua nguồn kích hoạt. Trạng thái sẽ tự động cập nhật.'}
+                </p>
+                {selectedOrder.warranty_months_snapshot ? (
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                    Bảo hành hiển thị theo chính sách của shop: <strong>{selectedOrder.warranty_months_snapshot} tháng</strong>. Hạn Gold do nhà cung cấp quyết định và hiển thị riêng khi có thông tin.
+                  </p>
+                ) : null}
+              </div>
+            ) : selectedOrder.fulfillment_mode_snapshot === 'manual_contact' ? (
               <div className="rounded-2xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/40 dark:bg-amber-950/20 p-4 space-y-3">
                 <div className="flex items-center gap-2 text-amber-700 dark:text-amber-300 font-bold text-xs">
                   <CheckCircle2 className="h-4 w-4" /> Đơn do Admin xử lý
