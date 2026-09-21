@@ -60,6 +60,11 @@ export const AdminPlans: React.FC = () => {
   const [supportedPlatforms, setSupportedPlatforms] = useState<'all' | 'ios' | 'android'>('all');
   const [iosFulfillmentMode, setIosFulfillmentMode] = useState<'auto_activation' | 'manual_contact' | 'disabled'>('auto_activation');
   const [androidFulfillmentMode, setAndroidFulfillmentMode] = useState<'apk_download' | 'manual_contact' | 'disabled'>('apk_download');
+  const [activationProvider, setActivationProvider] = useState<'legacy_locket' | 'lunakey'>('legacy_locket');
+  const [providerCategory, setProviderCategory] = useState('');
+  const [warrantyMonths, setWarrantyMonths] = useState<number>(0);
+  const [warrantyPolicy, setWarrantyPolicy] = useState('');
+  const [allowExistingGold, setAllowExistingGold] = useState(false);
   const [featuresText, setFeaturesText] = useState('');
   const [isPopular, setIsPopular] = useState(false);
   const [isActive, setIsActive] = useState(true);
@@ -107,6 +112,11 @@ export const AdminPlans: React.FC = () => {
     setSupportedPlatforms('all');
     setIosFulfillmentMode('auto_activation');
     setAndroidFulfillmentMode('apk_download');
+    setActivationProvider('legacy_locket');
+    setProviderCategory('');
+    setWarrantyMonths(0);
+    setWarrantyPolicy('');
+    setAllowExistingGold(false);
     setFeaturesText('Kích hoạt Locket Gold\nCấp phép tự động\nHỗ trợ 24/7');
     setIsPopular(false);
     setIsActive(true);
@@ -126,6 +136,11 @@ export const AdminPlans: React.FC = () => {
     setSupportedPlatforms(plan.supported_platforms);
     setIosFulfillmentMode(plan.ios_fulfillment_mode || (plan.supported_platforms === 'android' ? 'disabled' : 'auto_activation'));
     setAndroidFulfillmentMode(plan.android_fulfillment_mode || (plan.supported_platforms === 'ios' ? 'disabled' : 'apk_download'));
+    setActivationProvider(plan.activation_provider || 'legacy_locket');
+    setProviderCategory(plan.provider_category || '');
+    setWarrantyMonths(plan.warranty_months || 0);
+    setWarrantyPolicy(plan.warranty_policy || '');
+    setAllowExistingGold(Boolean(plan.allow_existing_gold));
     setFeaturesText(Array.isArray(plan.features) ? plan.features.join('\n') : '');
     setIsPopular(Boolean(plan.is_popular));
     setIsActive(Boolean(plan.is_active));
@@ -165,6 +180,11 @@ export const AdminPlans: React.FC = () => {
       supported_platforms: supportedPlatforms,
       ios_fulfillment_mode: iosFulfillmentMode,
       android_fulfillment_mode: androidFulfillmentMode,
+      activation_provider: activationProvider,
+      provider_category: activationProvider === 'lunakey' ? (providerCategory.trim() || null) : null,
+      warranty_months: activationProvider === 'lunakey' ? (Number(warrantyMonths) || 0) : null,
+      warranty_policy: activationProvider === 'lunakey' ? (warrantyPolicy.trim() || null) : null,
+      allow_existing_gold: activationProvider === 'lunakey' ? allowExistingGold : false,
       features,
       is_popular: isPopular,
       is_active: isActive,
@@ -322,7 +342,20 @@ export const AdminPlans: React.FC = () => {
                   <span>Nền tảng:</span>
                   <span className="font-semibold uppercase text-zinc-300">{p.supported_platforms}</span>
                 </div>
+                <div className="flex items-baseline justify-between text-[11px] text-zinc-500">
+                  <span>Nguồn kích hoạt:</span>
+                  <span className="font-semibold text-zinc-300">
+                    {p.activation_provider === 'lunakey' ? 'LunaKey' : 'Locket cũ'}
+                  </span>
+                </div>
               </div>
+
+              {p.activation_provider === 'lunakey' && p.sellable === false && (
+                <div className="mb-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-2.5 text-[11px] text-amber-300 flex items-start gap-1.5">
+                  <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                  <span>Chưa đủ cấu hình để mở bán: {(p.readiness_issues || []).join(', ') || 'kiểm tra cấu hình provider'}</span>
+                </div>
+              )}
 
               {/* Features List */}
               <div className="flex-1 space-y-1.5 my-3">
@@ -525,6 +558,74 @@ export const AdminPlans: React.FC = () => {
               <p className="sm:col-span-2 text-[11px] leading-relaxed text-zinc-500">
                 VPN/Pro nên chọn “Gửi liên hệ cho Admin”. Gói Android tải file chọn “Cấp link tải APK”. Chỉ luồng tự động mới vào hàng đợi kích hoạt Locket.
               </p>
+            </div>
+
+            <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/40 p-3">
+              <div>
+                <label htmlFor="admin-plan-provider" className="block text-zinc-300 font-semibold mb-1">Nguồn kích hoạt (Provider)</label>
+                <select
+                  id="admin-plan-provider"
+                  value={activationProvider}
+                  onChange={(e) => setActivationProvider(e.target.value as 'legacy_locket' | 'lunakey')}
+                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
+                >
+                  <option value="legacy_locket">Locket cũ (hàng đợi tài khoản)</option>
+                  <option value="lunakey">LunaKey (API bên thứ ba)</option>
+                </select>
+              </div>
+
+              {activationProvider === 'lunakey' && (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="admin-plan-provider-category" className="block text-zinc-300 font-semibold mb-1">Category LunaKey *</label>
+                      <input
+                        id="admin-plan-provider-category"
+                        type="text"
+                        value={providerCategory}
+                        onChange={(e) => setProviderCategory(e.target.value)}
+                        placeholder="Ví dụ: yearly"
+                        className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="admin-plan-warranty-months" className="block text-zinc-300 font-semibold mb-1">Bảo hành (tháng)</label>
+                      <input
+                        id="admin-plan-warranty-months"
+                        type="number"
+                        min="0"
+                        max="120"
+                        value={warrantyMonths}
+                        onChange={(e) => setWarrantyMonths(parseInt(e.target.value, 10) || 0)}
+                        className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label htmlFor="admin-plan-warranty-policy" className="block text-zinc-300 font-semibold mb-1">Chính sách bảo hành</label>
+                    <input
+                      id="admin-plan-warranty-policy"
+                      type="text"
+                      value={warrantyPolicy}
+                      onChange={(e) => setWarrantyPolicy(e.target.value)}
+                      placeholder="Ví dụ: shop_calendar_months (bắt buộc nếu bán kèm bảo hành)"
+                      className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer select-none text-zinc-300">
+                    <input
+                      type="checkbox"
+                      checked={allowExistingGold}
+                      onChange={(e) => setAllowExistingGold(e.target.checked)}
+                      className="h-4 w-4 rounded border-zinc-700 bg-zinc-950 text-amber-500 focus:ring-amber-500"
+                    />
+                    <span>Cho phép mua khi tài khoản đang có Gold (chỉ bật sau khi đã xác nhận chính sách gia hạn)</span>
+                  </label>
+                  <p className="text-[11px] leading-relaxed text-amber-400/80">
+                    Gói LunaKey sẽ không bán được nếu thiếu API key, thiếu category, hoặc bật bảo hành mà chưa có chính sách. Hạn Gold hiển thị riêng, không lấy từ số tháng bảo hành.
+                  </p>
+                </>
+              )}
             </div>
 
             <div>

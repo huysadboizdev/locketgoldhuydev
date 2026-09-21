@@ -14,10 +14,15 @@ os.environ["LOCKET_DB"] = temp_db_path
 os.environ["FLASK_SECRET_KEY"] = "test-secret-key-1234567890-test"
 os.environ["JWT_SECRET"] = "test-jwt-secret-very-secure-key-12345678"
 os.environ["REFRESH_TOKEN_PEPPER"] = "test-pepper-secret-very-secure-12345"
+os.environ["ADMIN_EMAIL"] = "admin@locket.test"
 os.environ["ADMIN_USERNAME"] = "admin"
 os.environ["ADMIN_PASSWORD"] = "admin-secret-password-1234"
 os.environ["ACCESS_TOKEN_TTL_SECONDS"] = "600"
 os.environ["REFRESH_TOKEN_TTL_SECONDS"] = "2592000"
+
+# Keep generated download assets OUT of the tracked backend/locket/static dir.
+_assets_dir = tempfile.mkdtemp(prefix="locket-token-assets-")
+os.environ["MOBILECONFIG_PATH"] = os.path.join(_assets_dir, "locket.mobileconfig")
 
 # Make backend root importable
 backend_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -501,10 +506,9 @@ class TokenAuthComprehensiveTestCase(unittest.TestCase):
         download_url = tdata["download_url"]
         self.assertIn("?ticket=", download_url)
 
-        # 3. Create mock mobileconfig static file if not exists
-        static_dir = os.path.join(self.app.root_path, "static")
-        os.makedirs(static_dir, exist_ok=True)
-        mc_path = os.path.join(static_dir, "locket.mobileconfig")
+        # 3. Create mock mobileconfig in an isolated temp dir (not in the repo)
+        os.makedirs(_assets_dir, exist_ok=True)
+        mc_path = os.environ["MOBILECONFIG_PATH"]
         with open(mc_path, "w", encoding="utf-8") as f:
             f.write("<plist>dummy mobileconfig</plist>")
 

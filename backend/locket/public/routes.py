@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -166,6 +167,133 @@ def _validate_fulfillment_payload(plan, platform, body):
         # Keep username from body for gold check
         pass
     return mode, username, zalo, facebook, None
+
+
+def _resolve_lunakey_purchase(plan, body, user_id):
+    """Validate a LunaKey purchase against the server-side lookup confirmation.
+
+    Returns ``(meta, error_response)``. The UID/username always come from the
+    server-stored confirmation, never from the request body.
+    """
+    from .. import lunakey_service
+    from ..providers import lunakey as lunakey_client
+
+    issues = lunakey_service.plan_readiness(plan)
+    if issues:
+        if "api_key_missing" in issues:
+            code = "provider_not_configured"
+        elif "provider_paused" in issues:
+            code = "provider_paused"
+        elif "provider_disabled" in issues:
+            code = "provider_disabled"
+        else:
+            code = "plan_not_configured"
+        return None, (jsonify({
+            "success": False,
+            "error": code,
+            "msg": lunakey_client.public_message(code),
+        }), 503)
+
+    token = str(body.get("lookup_token") or "").strip()
+    confirmation = lunakey_service.consume_confirmation(user_id, plan["id"], token)
+    if not confirmation:
+        return None, (jsonify({
+            "success": False,
+            "error": "lookup_confirmation_required",
+            "msg": "Vui lòng xác minh lại tài khoản Locket trước khi thanh toán.",
+        }), 409)
+
+    profile = confirmation.get("profile") or {}
+    uid = confirmation.get("uid")
+    if not uid:
+        return None, (jsonify({
+            "success": False,
+            "error": "lookup_confirmation_invalid",
+            "msg": "Xác minh tài khoản không hợp lệ. Vui lòng tra cứu lại.",
+        }), 409)
+
+    has_gold = profile.get("has_gold")
+    allow_existing = bool(plan.get("allow_existing_gold"))
+    if has_gold is not False and not allow_existing:
+        # Policy for accounts that already hold Gold is not confirmed for this
+        # plan, so it must not be sold. (has_gold None = unknown -> block.)
+        return None, (jsonify({
+            "success": False,
+            "error": "existing_gold_not_supported",
+            "msg": "Tài khoản này đang có Gold. Gói hiện chưa hỗ trợ gia hạn, vui lòng liên hệ hỗ trợ.",
+        }), 409)
+
+    return {
+        "provider": "lunakey",
+        "category": plan.get("provider_category"),
+        "warranty_months": plan.get("warranty_months"),
+        "warranty_policy": plan.get("warranty_policy"),
+        "uid": uid,
+        "username": confirmation.get("username") or "",
+        "profile_json": json.dumps(profile, ensure_ascii=False),
+    }, None
+
+
+def _request_fingerprint(plan_id, platform, provider, raw_username,
+                         contact_zalo, contact_facebook, coupon_code):
+    """Stable fingerprint of the *request as sent*, independent of provider
+    lookup state. Used so an idempotent replay can be verified even after the
+    lookup confirmation expired or the plan/provider state changed."""
+    if provider == "lunakey":
+        norm_user = db.normalize_locket_username(raw_username)
+    else:
+        norm_user = (raw_username or "").strip()
+    payload = json.dumps({
+        "plan_id": plan_id,
+        "platform": platform,
+        "provider": provider,
+        "username": norm_user,
+        "contact_zalo": (contact_zalo or "").strip(),
+        "contact_facebook": (contact_facebook or "").strip(),
+        "coupon": (coupon_code or "").strip().upper(),
+    }, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _fingerprint_matches(order_row, fingerprint):
+    try:
+        stored = order_row["request_fingerprint"]
+    except (KeyError, IndexError, TypeError):
+        stored = None
+    if stored:
+        return stored == fingerprint
+    # Rows created before the fingerprint column existed fall back to the
+    # structural checks (owner/plan/platform) already performed by the caller.
+    return True
+
+
+def _lunakey_duplicate_error(meta):
+    """Return a 409 response when this provider account already has an
+    in-flight order. Called only for new (non-idempotent) purchases so an
+    idempotent retry can still return the original order."""
+    if not meta:
+        return None
+    in_flight, _order = db.has_in_flight_order_for_locket_username(meta.get("username"))
+    if in_flight:
+        return jsonify({
+            "success": False,
+            "error": "duplicate_in_progress",
+            "msg": "Đơn của tài khoản này đang được xử lý. Vui lòng đợi hoàn tất.",
+        }), 409
+    return None
+
+
+def _lunakey_snapshot_args(meta):
+    """Return the activation_orders provider columns as a tuple/dict."""
+    return {
+        "activation_provider_snapshot": meta["provider"],
+        "provider_category_snapshot": meta["category"],
+        "warranty_months_snapshot": meta["warranty_months"],
+        "warranty_policy_snapshot": meta["warranty_policy"],
+        "provider_uid": meta["uid"],
+        "provider_username": meta["username"],
+        "provider_profile_json": meta["profile_json"],
+    }
 
 
 def _mask_username(name):
@@ -978,6 +1106,68 @@ def list_plans():
     return jsonify({"success": True, "plans": plans})
 
 
+# ---- LunaKey Provider Lookup ----
+
+@bp.route("/api/lunakey/lookup", methods=["POST"])
+@access_required
+def lunakey_lookup():
+    """Look up a Locket profile through the plan's provider and persist a
+    server-side confirmation token. The client never supplies a UID."""
+    from .. import lunakey_service
+
+    if not validate_csrf():
+        return jsonify({
+            "success": False,
+            "error": "invalid_csrf_token",
+            "msg": "Phiên làm việc đã hết hạn hoặc CSRF token không hợp lệ. Vui lòng tải lại trang.",
+        }), 403
+
+    from ..user_auth import is_rate_limited
+    user_id = g.current_user["id"]
+    ip = request.remote_addr or "127.0.0.1"
+    if is_rate_limited(f"lk_lookup:{user_id}", max_requests=20, window_seconds=300) or \
+       is_rate_limited(f"lk_lookup_ip:{ip}", max_requests=40, window_seconds=300):
+        return jsonify({
+            "success": False,
+            "error": "rate_limited",
+            "msg": "Bạn thao tác quá nhanh. Vui lòng thử lại sau ít phút.",
+        }), 429
+
+    if not request.is_json or not isinstance(request.json, dict):
+        return jsonify({"success": False, "error": "invalid_payload", "msg": "Dữ liệu yêu cầu không hợp lệ."}), 400
+    body = request.json or {}
+    plan_id = body.get("plan_id")
+    username = str(body.get("username") or "").strip()
+    if not plan_id:
+        return jsonify({"success": False, "error": "plan_id_required", "msg": "Vui lòng chọn gói dịch vụ."}), 400
+
+    plan = db.get_plan_by_id(plan_id, public=False)
+    if not plan or not plan.get("is_active"):
+        return jsonify({"success": False, "error": "plan_unavailable", "msg": "Gói dịch vụ không khả dụng."}), 400
+    if (plan.get("activation_provider") or "legacy_locket") != "lunakey":
+        return jsonify({"success": False, "error": "invalid_provider", "msg": "Gói này không dùng nguồn LunaKey."}), 400
+
+    try:
+        token, profile = lunakey_service.lookup_and_confirm(user_id, plan, username)
+    except lunakey_service.ProviderError as exc:
+        return jsonify({"success": False, "error": exc.code, "msg": exc.message}), exc.http_status
+
+    return jsonify({
+        "success": True,
+        "lookup_token": token,
+        "expires_in": lunakey_service.LOOKUP_TOKEN_TTL_SECONDS,
+        "plan": {
+            "id": plan["id"],
+            "name": plan["name"],
+            "provider": "lunakey",
+            "provider_category": plan.get("provider_category"),
+            "warranty_months": plan.get("warranty_months"),
+            "warranty_policy": plan.get("warranty_policy"),
+        },
+        "profile": profile,
+    })
+
+
 # ---- Wallet Endpoints ----
 
 @bp.route("/api/wallet", methods=["GET"])
@@ -1215,21 +1405,15 @@ def create_plan_payment():
         return jsonify({"success": False, "error": "plan_id_required", "msg": "Vui lòng chọn gói dịch vụ."}), 400
     if platform not in ("ios", "android"):
         return jsonify({"success": False, "error": "invalid_platform", "msg": "Vui lòng chọn nền tảng hợp lệ (ios hoặc android)."}), 400
+    # Load the plan even when inactive: an idempotent replay must still work.
     plan = db.get_plan_by_id(plan_id, public=False)
-    if not plan or not plan["is_active"]:
-        return jsonify({"success": False, "error": "plan_unavailable", "msg": "Gói dịch vụ không khả dụng hoặc đã bị ẩn."}), 400
-    if plan.get("inventory_status") == "out_of_stock":
-        return jsonify({"success": False, "error": "out_of_stock", "msg": "Gói dịch vụ tạm hết hàng."}), 400
-    if plan["supported_platforms"] != "all" and plan["supported_platforms"] != platform:
-        return jsonify({"success": False, "error": "platform_not_supported", "msg": f"Gói này chỉ hỗ trợ {plan['supported_platforms']}."}), 400
-
-    mode, username, contact_zalo, contact_facebook, validation_error = _validate_fulfillment_payload(
-        plan, platform, body
-    )
-    if validation_error:
-        return validation_error
+    if not plan:
+        return jsonify({"success": False, "error": "plan_not_found", "msg": "Không tìm thấy gói dịch vụ."}), 400
 
     user_id = g.current_user["id"]
+    provider = plan.get("activation_provider") or "legacy_locket"
+    raw_username = str(body.get("username") or body.get("target_username") or "").strip()
+
     idempotency_key = str(body.get("idempotency_key") or "").strip()
     if len(idempotency_key) > 200:
         return jsonify({
@@ -1251,53 +1435,92 @@ def create_plan_payment():
                 "msg": str(exc),
             }), 400
 
-    # Idempotency check BEFORE gold precheck: an exact retry must return the
-    # original order instead of being blocked as already_registered.
+    request_fingerprint = _request_fingerprint(
+        plan_id, platform, provider, raw_username,
+        str(body.get("contact_zalo") or ""), str(body.get("contact_facebook") or ""), coupon_code,
+    )
+
+    # Idempotent replay is resolved BEFORE any new-order-only condition (plan
+    # active, provider readiness/pause, lookup token). The stored order is
+    # returned for the same owner + plan + coupon + request fingerprint.
     if idempotency_key:
         existing = db.get_payment_order_by_idempotency(user_id, idempotency_key)
         if existing:
+            conn = db.get_conn()
+            act_row = conn.execute(
+                "SELECT * FROM activation_orders WHERE payment_order_id = ? ORDER BY id DESC LIMIT 1",
+                (existing["id"],),
+            ).fetchone()
             if (existing["purpose"] == "plan_purchase"
                     and existing["plan_id"] == plan_id
-                    and (existing.get("coupon_code_snapshot") or "") == coupon_code):
-                conn = db.get_conn()
-                act_row = conn.execute("SELECT * FROM activation_orders WHERE payment_order_id = ?", (existing["id"],)).fetchone()
-                if (act_row and act_row["platform"] == platform
-                        and act_row["locket_username"] == username
-                        and act_row["fulfillment_mode_snapshot"] == mode
-                        and (act_row["contact_zalo"] or "") == (contact_zalo or "")
-                        and (act_row["contact_facebook"] or "") == (contact_facebook or "")):
-                    now = time.time()
-                    transfer_code = existing.get("transfer_code") or existing["payment_code"]
-                    qr_url = existing.get("qr_payload") or payment_service.build_vietqr_url(existing["amount_vnd"], transfer_code)
-                    return jsonify({
-                        "success": True,
-                        "payment_id": existing["id"],
-                        "payment_code": existing["payment_code"],
-                        "payment_ref": existing["payment_code"],
-                        "transfer_code": transfer_code,
-                        "activation_order_id": act_row["id"],
-                        "fulfillment_mode": mode,
-                        "purpose": "plan_purchase",
-                        "amount_vnd": existing["amount_vnd"],
-                        "coin_amount": existing["coin_amount"],
-                        "qr_url": qr_url,
-                        "status": existing["status"],
-                        "created_at": existing["created_at"],
-                        "expires_at": existing["expires_at"],
-                        "expires_in": max(0, int(existing["expires_at"] - now)),
-                        "server_time": now,
-                        "bank_config": payment_service.get_bank_config(),
-                    })
+                    and (existing.get("coupon_code_snapshot") or "") == coupon_code
+                    and act_row is not None
+                    and act_row["user_id"] == user_id
+                    and act_row["platform"] == platform
+                    and _fingerprint_matches(act_row, request_fingerprint)):
+                now = time.time()
+                transfer_code = existing.get("transfer_code") or existing["payment_code"]
+                qr_url = existing.get("qr_payload") or payment_service.build_vietqr_url(existing["amount_vnd"], transfer_code)
+                return jsonify({
+                    "success": True,
+                    "payment_id": existing["id"],
+                    "payment_code": existing["payment_code"],
+                    "payment_ref": existing["payment_code"],
+                    "transfer_code": transfer_code,
+                    "activation_order_id": act_row["id"],
+                    "fulfillment_mode": act_row["fulfillment_mode_snapshot"],
+                    "purpose": "plan_purchase",
+                    "amount_vnd": existing["amount_vnd"],
+                    "coin_amount": existing["coin_amount"],
+                    "qr_url": qr_url,
+                    "status": existing["status"],
+                    "created_at": existing["created_at"],
+                    "expires_at": existing["expires_at"],
+                    "expires_in": max(0, int(existing["expires_at"] - now)),
+                    "server_time": now,
+                    "bank_config": payment_service.get_bank_config(),
+                })
             return jsonify({
                 "success": False,
                 "error": "idempotency_conflict",
                 "msg": "Khóa xử lý trùng lặp nhưng nội dung yêu cầu khác nhau.",
             }), 409
 
-    gold_block = _gold_block_error(username)
-    if gold_block is not None:
-        code, msg = gold_block
-        return jsonify({"success": False, "error": code, "msg": msg}), 409
+    # New order only: enforce availability and provider state now.
+    if not plan["is_active"]:
+        return jsonify({"success": False, "error": "plan_unavailable", "msg": "Gói dịch vụ không khả dụng hoặc đã bị ẩn."}), 400
+    if plan.get("inventory_status") == "out_of_stock":
+        return jsonify({"success": False, "error": "out_of_stock", "msg": "Gói dịch vụ tạm hết hàng."}), 400
+    if plan["supported_platforms"] != "all" and plan["supported_platforms"] != platform:
+        return jsonify({"success": False, "error": "platform_not_supported", "msg": f"Gói này chỉ hỗ trợ {plan['supported_platforms']}."}), 400
+
+    provider_meta = None
+    if provider == "lunakey":
+        provider_meta, provider_error = _resolve_lunakey_purchase(plan, body, user_id)
+        if provider_error:
+            return provider_error
+        mode = "auto_activation"
+        username = provider_meta["username"]
+        contact_zalo = None
+        contact_facebook = None
+    else:
+        mode, username, contact_zalo, contact_facebook, validation_error = _validate_fulfillment_payload(
+            plan, platform, body
+        )
+        if validation_error:
+            return validation_error
+
+    # LunaKey eligibility was already enforced from the server-side lookup
+    # confirmation; the legacy RevenueCat precheck must not run for it.
+    if provider != "lunakey":
+        gold_block = _gold_block_error(username)
+        if gold_block is not None:
+            code, msg = gold_block
+            return jsonify({"success": False, "error": code, "msg": msg}), 409
+    else:
+        dup_error = _lunakey_duplicate_error(provider_meta)
+        if dup_error:
+            return dup_error
 
     conn = db.get_conn()
     now = time.time()
@@ -1365,6 +1588,15 @@ def create_plan_payment():
         )
         pay_id = cursor.lastrowid
 
+        provider_snapshot = _lunakey_snapshot_args(provider_meta) if provider_meta else {
+            "activation_provider_snapshot": provider,
+            "provider_category_snapshot": None,
+            "warranty_months_snapshot": None,
+            "warranty_policy_snapshot": None,
+            "provider_uid": None,
+            "provider_username": None,
+            "provider_profile_json": None,
+        }
         act_cursor = conn.execute(
             """INSERT INTO activation_orders
                (user_id, plan_id, plan_name_snapshot, product_id_snapshot, duration_days_snapshot,
@@ -1372,8 +1604,12 @@ def create_plan_payment():
                 platform, locket_username, fulfillment_mode_snapshot, contact_zalo,
                 contact_facebook, status, created_at, updated_at,
                 original_price_vnd_snapshot, original_price_coin_snapshot,
-                discount_vnd_snapshot, discount_coin_snapshot, coupon_id, coupon_code_snapshot)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'qr', ?, ?, ?, ?, ?, ?, 'awaiting_payment', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                discount_vnd_snapshot, discount_coin_snapshot, coupon_id, coupon_code_snapshot,
+                activation_provider_snapshot, provider_category_snapshot,
+                warranty_months_snapshot, warranty_policy_snapshot, provider_uid,
+                provider_username, provider_profile_json, request_fingerprint)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'qr', ?, ?, ?, ?, ?, ?, 'awaiting_payment', ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 user_id,
                 plan_id,
@@ -1396,6 +1632,14 @@ def create_plan_payment():
                 disc_coin,
                 coupon_id,
                 coupon_code_snapshot,
+                provider_snapshot["activation_provider_snapshot"],
+                provider_snapshot["provider_category_snapshot"],
+                provider_snapshot["warranty_months_snapshot"],
+                provider_snapshot["warranty_policy_snapshot"],
+                provider_snapshot["provider_uid"],
+                provider_snapshot["provider_username"],
+                provider_snapshot["provider_profile_json"],
+                request_fingerprint,
             ),
         )
         act_id = act_cursor.lastrowid
@@ -1910,28 +2154,18 @@ def purchase_plan_coin():
     if not plan_id:
         return jsonify({"success": False, "error": "plan_id_required", "msg": "Vui lòng chọn gói dịch vụ."}), 400
 
+    # Load the plan even when it is inactive: an idempotent replay of an order
+    # that was already created must still be answered.
     plan = db.get_plan_by_id(plan_id, public=False)
-    if not plan or not plan["is_active"]:
-        return jsonify({"success": False, "error": "Gói dịch vụ không khả dụng", "msg": "Gói dịch vụ không khả dụng hoặc đã bị ẩn."}), 400
-    if plan.get("inventory_status") == "out_of_stock":
-        return jsonify({"success": False, "error": "out_of_stock", "msg": "Gói dịch vụ tạm hết hàng."}), 400
+    if not plan:
+        return jsonify({"success": False, "error": "plan_not_found", "msg": "Không tìm thấy gói dịch vụ."}), 400
 
     if platform == "all":
         platform = "ios" if plan["supported_platforms"] in ("all", "ios") else "android"
 
-    if plan["supported_platforms"] != "all" and plan["supported_platforms"] != platform:
-        return jsonify({"success": False, "error": "Gói dịch vụ không hỗ trợ nền tảng", "msg": f"Gói này chỉ hỗ trợ {plan['supported_platforms']}."}), 400
-
-    if platform not in ("ios", "android"):
-        return jsonify({"success": False, "error": "invalid_platform", "msg": "Vui lòng chọn nền tảng hợp lệ (ios hoặc android)."}), 400
-    mode, username, contact_zalo, contact_facebook, fulfillment_error = (
-        _validate_fulfillment_payload(plan, platform, body)
-    )
-    if fulfillment_error:
-        return fulfillment_error
-
     user_id = g.current_user["id"]
-    price_coin = plan["price_coin"]
+    provider = plan.get("activation_provider") or "legacy_locket"
+
     client_idem = str(body.get("idempotency_key") or "").strip()
     if len(client_idem) > 200:
         return jsonify({
@@ -1940,10 +2174,15 @@ def purchase_plan_coin():
             "msg": "Khóa chống trùng giao dịch không hợp lệ.",
         }), 400
     coupon_code = str(body.get("coupon_code") or "").strip()
+    request_fingerprint = _request_fingerprint(
+        plan_id, platform, provider, username,
+        str(body.get("contact_zalo") or ""), str(body.get("contact_facebook") or ""), coupon_code,
+    )
 
-    # Idempotency dedupe BEFORE gold precheck: an exact retry must return the
-    # original order instead of being blocked as already_registered.
-    # Gold check below applies only to new content.
+    # Idempotent replay is resolved BEFORE any new-order-only condition (plan
+    # active, provider readiness/pause, lookup token, gold precheck). The stored
+    # order is returned for the same owner + plan + platform + coupon + request
+    # fingerprint; anything else is a conflict.
     tx_status = None
     tx_res = None
     if client_idem:
@@ -1972,11 +2211,8 @@ def purchase_plan_coin():
                         and existing_order["user_id"] == user_id
                         and existing_order["plan_id"] == plan_id
                         and existing_order["platform"] == platform
-                        and existing_order["fulfillment_mode_snapshot"] == mode
-                        and (existing_order["locket_username"] or "") == (username or "").strip()
-                        and (existing_order["contact_zalo"] or "") == (contact_zalo or "").strip()
-                        and (existing_order["contact_facebook"] or "") == (contact_facebook or "").strip()
-                        and (existing_order["coupon_code_snapshot"] or "") == (normalized_request_coupon or "")):
+                        and (existing_order["coupon_code_snapshot"] or "") == (normalized_request_coupon or "")
+                        and _fingerprint_matches(existing_order, request_fingerprint)):
                     tx_status, tx_res = "idempotent", {
                         "order": dict(existing_order),
                         "remaining_balance": existing_tx["balance_after"],
@@ -1988,13 +2224,47 @@ def purchase_plan_coin():
                         "msg": "Khóa giao dịch đã được dùng cho một yêu cầu khác.",
                     }), 409
 
+    mode = None
+    contact_zalo = None
+    contact_facebook = None
+    provider_meta = None
     if tx_status is None:
-        gold_block = _gold_block_error(username)
-        if gold_block is not None:
-            code, msg = gold_block
-            return jsonify({"success": False, "error": code, "msg": msg}), 409
+        # New order only: enforce availability and provider state now.
+        if not plan["is_active"]:
+            return jsonify({"success": False, "error": "Gói dịch vụ không khả dụng", "msg": "Gói dịch vụ không khả dụng hoặc đã bị ẩn."}), 400
+        if plan.get("inventory_status") == "out_of_stock":
+            return jsonify({"success": False, "error": "out_of_stock", "msg": "Gói dịch vụ tạm hết hàng."}), 400
+        if plan["supported_platforms"] != "all" and plan["supported_platforms"] != platform:
+            return jsonify({"success": False, "error": "Gói dịch vụ không hỗ trợ nền tảng", "msg": f"Gói này chỉ hỗ trợ {plan['supported_platforms']}."}), 400
+        if platform not in ("ios", "android"):
+            return jsonify({"success": False, "error": "invalid_platform", "msg": "Vui lòng chọn nền tảng hợp lệ (ios hoặc android)."}), 400
+
+        if provider == "lunakey":
+            provider_meta, provider_error = _resolve_lunakey_purchase(plan, body, user_id)
+            if provider_error:
+                return provider_error
+            mode = "auto_activation"
+            username = provider_meta["username"]
+        else:
+            mode, username, contact_zalo, contact_facebook, fulfillment_error = (
+                _validate_fulfillment_payload(plan, platform, body)
+            )
+            if fulfillment_error:
+                return fulfillment_error
+
+    if tx_status is None:
+        if provider != "lunakey":
+            gold_block = _gold_block_error(username)
+            if gold_block is not None:
+                code, msg = gold_block
+                return jsonify({"success": False, "error": code, "msg": msg}), 409
+        else:
+            dup_error = _lunakey_duplicate_error(provider_meta)
+            if dup_error:
+                return dup_error
 
         idempotency_key = client_idem or f"coin_order_{user_id}_{plan_id}_{secrets.token_hex(12)}"
+        snapshot = _lunakey_snapshot_args(provider_meta) if provider_meta else {}
         tx_status, tx_res = db.purchase_plan_with_coin_atomic(
         user_id=user_id,
         plan_id=plan_id,
@@ -2005,6 +2275,14 @@ def purchase_plan_coin():
         contact_facebook=contact_facebook,
         idempotency_key=idempotency_key,
         coupon_code=coupon_code if coupon_code else None,
+        provider=provider,
+        provider_category=snapshot.get("provider_category_snapshot"),
+        warranty_months=snapshot.get("warranty_months_snapshot"),
+        warranty_policy=snapshot.get("warranty_policy_snapshot"),
+        provider_uid=snapshot.get("provider_uid"),
+        provider_username=snapshot.get("provider_username"),
+        provider_profile_json=snapshot.get("provider_profile_json"),
+        request_fingerprint=request_fingerprint,
     )
 
     if tx_status == "coupon_error":
@@ -2043,6 +2321,8 @@ def purchase_plan_coin():
 
     order = tx_res["order"]
     act_id = order["id"]
+    if not mode:
+        mode = order.get("fulfillment_mode_snapshot") or "auto_activation"
     disp_status, disp_res = payment_service.dispatch_paid_activation_order(
         act_id, app=current_app._get_current_object()
     )
@@ -2082,7 +2362,7 @@ def purchase_plan_coin():
         "status": status,
         "fulfillment_mode": mode,
         "idempotent": tx_status == "idempotent",
-        "msg": messages[mode],
+        "msg": messages.get(mode, "Giao dịch đã được ghi nhận."),
         "remaining_balance": tx_res["remaining_balance"],
     })
 
@@ -2097,11 +2377,18 @@ def list_user_orders():
     limit = request.args.get("limit", 20)
     offset = request.args.get("offset", 0)
     data = db.list_activation_orders_by_user(user_id, limit=limit, offset=offset)
+    from .. import lunakey_service
+    safe_items = []
     for item in data.get("items", []):
         if item.get("contact_zalo"):
             item["contact_zalo"] = db.mask_zalo(item["contact_zalo"])
         if not item.get("locket_username"):
             item["locket_username"] = ""
+        job = None
+        if (item.get("activation_provider_snapshot") or "legacy_locket") == "lunakey":
+            job = db.get_provider_job_by_order(item["id"])
+        safe_items.append(lunakey_service.redact_order_for_customer(item, job))
+    data["items"] = safe_items
     return jsonify({"success": True, **data})
 
 
@@ -2117,11 +2404,15 @@ def get_user_order(order_id):
         order["contact_zalo"] = db.mask_zalo(order["contact_zalo"])
     if not order.get("locket_username"):
         order["locket_username"] = ""
+    provider = order.get("activation_provider_snapshot") or "legacy_locket"
+    from .. import lunakey_service
+    job = db.get_provider_job_by_order(order_id) if provider == "lunakey" else None
+    safe_order = lunakey_service.redact_order_for_customer(order, job)
     queue_info = None
-    if order.get("queue_client_id"):
+    if provider != "lunakey" and order.get("queue_client_id"):
         qm = current_app.queue_manager
         queue_info = qm.get_status(order["queue_client_id"], user_id=user_id)
-    return jsonify({"success": True, "order": order, "queue": queue_info})
+    return jsonify({"success": True, "order": safe_order, "queue": queue_info})
 
 
 # ---- Platform & DNS Configuration Endpoint ----

@@ -344,6 +344,8 @@ export interface CreatorsResponse {
 
 export type FulfillmentMode = 'auto_activation' | 'manual_contact' | 'apk_download' | 'disabled';
 
+export type ActivationProvider = 'legacy_locket' | 'lunakey';
+
 export interface PlanItem {
   id: number;
   name: string;
@@ -361,6 +363,40 @@ export interface PlanItem {
   inventory_status?: 'in_stock' | 'out_of_stock';
   ios_fulfillment_mode: Exclude<FulfillmentMode, 'apk_download'>;
   android_fulfillment_mode: Exclude<FulfillmentMode, 'auto_activation'>;
+  /** Server-selected activation source. Never trusted from the client. */
+  activation_provider?: ActivationProvider;
+  provider_category?: string | null;
+  warranty_months?: number | null;
+  warranty_policy?: string | null;
+  /** Whether the plan may be sold to an account that already has Gold. */
+  existing_gold_supported?: boolean;
+}
+
+export interface LunakeyProfile {
+  username?: string | null;
+  name?: string | null;
+  avatar?: string | null;
+  uid?: string | null;
+  has_gold?: boolean | null;
+  gold_expiry?: string | null;
+  gold_days_left?: number | null;
+}
+
+export interface LunakeyLookupResponse {
+  success: boolean;
+  lookup_token?: string;
+  expires_in?: number;
+  plan?: {
+    id: number;
+    name: string;
+    provider: ActivationProvider;
+    provider_category?: string | null;
+    warranty_months?: number | null;
+    warranty_policy?: string | null;
+  };
+  profile?: LunakeyProfile;
+  error?: string;
+  msg?: string;
 }
 
 export interface PlansResponse {
@@ -520,6 +556,20 @@ export interface ActivationOrder {
   queue_client_id?: string | null;
   created_at: number;
   updated_at: number;
+  // Provider (LunaKey) snapshot + customer-safe status. Internal cost fields
+  // are stripped by the backend before reaching the customer.
+  activation_provider_snapshot?: ActivationProvider;
+  provider_category_snapshot?: string | null;
+  warranty_months_snapshot?: number | null;
+  warranty_policy_snapshot?: string | null;
+  provider_username?: string | null;
+  provider_completed_at?: number | null;
+  warranty_started_at?: number | null;
+  warranty_ends_at?: number | null;
+  provider?: ActivationProvider;
+  provider_status?: string | null;
+  provider_status_label?: string | null;
+  provider_profile?: LunakeyProfile | null;
 }
 
 export interface OrdersListResponse {

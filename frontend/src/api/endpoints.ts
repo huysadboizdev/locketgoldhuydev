@@ -28,6 +28,7 @@ import type {
   PlatformConfigResponse,
   ValidateCouponResponse,
   GoldCheckResponse,
+  LunakeyLookupResponse,
 } from '../types/api';
 
 
@@ -269,6 +270,17 @@ export async function deleteMyReviewApi(): Promise<{ success: boolean; msg: stri
   });
 }
 
+/**
+ * Tra cứu hồ sơ qua provider LunaKey cho một gói cụ thể.
+ * Trả về lookup_token do server lưu; client KHÔNG tự gửi UID.
+ */
+export async function lunakeyLookup(planId: number, username: string): Promise<LunakeyLookupResponse> {
+  return apiClient<LunakeyLookupResponse>('/api/lunakey/lookup', {
+    method: 'POST',
+    body: JSON.stringify({ plan_id: planId, username }),
+  });
+}
+
 export async function fetchPublicCreators(): Promise<CreatorsResponse> {
   return apiClient<CreatorsResponse>('/api/creators', { method: 'GET', cache: 'no-store' });
 }
@@ -341,6 +353,7 @@ export async function createPlanPayment(data: {
   contact_facebook?: string;
   idempotency_key?: string;
   coupon_code?: string;
+  lookup_token?: string;
 }): Promise<PlanPaymentResponse> {
   return apiClient<PlanPaymentResponse>('/api/payments/plan', {
     method: 'POST',
@@ -385,6 +398,7 @@ export async function purchasePlanWithCoin(data: {
   contact_facebook?: string;
   idempotency_key?: string;
   coupon_code?: string;
+  lookup_token?: string;
 }): Promise<CoinPurchaseResponse> {
   return apiClient<CoinPurchaseResponse>('/api/orders/coin', {
     method: 'POST',

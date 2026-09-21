@@ -24,6 +24,8 @@ import {
   completeManualAdminOrder,
   cancelManualAdminOrder,
   refundManualAdminOrder,
+  retryAdminProviderJob,
+  reconcileAdminProviderJob,
 } from '../../api/adminEndpoints';
 import { AdminActivationOrder } from '../../types/admin';
 import { ModalPortal } from '../../components/common/ModalPortal';
@@ -55,6 +57,12 @@ export const AdminOrders: React.FC = () => {
   const [refundRef, setRefundRef] = useState('');
   const [isSubmittingAction, setIsSubmittingAction] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // LunaKey provider job actions
+  const [isProviderActing, setIsProviderActing] = useState(false);
+  const [providerActionError, setProviderActionError] = useState<string | null>(null);
+  const [reconcileNote, setReconcileNote] = useState('');
+  const [reconcileOutcome, setReconcileOutcome] = useState<'completed' | 'failed'>('completed');
 
   const loadOrders = useCallback(async (silent = false) => {
     try {
@@ -109,6 +117,39 @@ export const AdminOrders: React.FC = () => {
   const formatDate = (timestamp?: number | null) => {
     if (!timestamp) return '—';
     return new Date(timestamp * 1000).toLocaleString('vi-VN');
+  };
+
+  const handleProviderRetry = async () => {
+    if (!detailOrder) return;
+    setIsProviderActing(true);
+    setProviderActionError(null);
+    try {
+      await retryAdminProviderJob(detailOrder.id);
+      await loadOrders(true);
+    } catch (err: any) {
+      setProviderActionError(err.message || 'Không thể thử lại job.');
+    } finally {
+      setIsProviderActing(false);
+    }
+  };
+
+  const handleProviderReconcile = async () => {
+    if (!detailOrder) return;
+    if (reconcileNote.trim().length < 5) {
+      setProviderActionError('Vui lòng nhập ghi chú đối soát (tối thiểu 5 ký tự).');
+      return;
+    }
+    setIsProviderActing(true);
+    setProviderActionError(null);
+    try {
+      await reconcileAdminProviderJob(detailOrder.id, reconcileOutcome, reconcileNote.trim());
+      setReconcileNote('');
+      await loadOrders(true);
+    } catch (err: any) {
+      setProviderActionError(err.message || 'Không thể ghi nhận đối soát.');
+    } finally {
+      setIsProviderActing(false);
+    }
   };
 
   const getStatusBadge = (status: string) => {
@@ -645,6 +686,69 @@ export const AdminOrders: React.FC = () => {
                 </div>
               )}
             </div>
+
+            {detailOrder.activation_provider_snapshot === 'lunakey' && (
+              <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3 text-xs">
+                <span className="font-bold text-amber-400 uppercase tracking-wider text-[10px] block">Nguồn LunaKey</span>
+                <div className="grid grid-cols-2 gap-2">
+                  <div><span className="text-zinc-500">Job: </span><span className="font-semibold text-zinc-200">{detailOrder.provider_job_status || '—'}</span></div>
+                  <div><span className="text-zinc-500">Số lần thử: </span><span className="font-semibold text-zinc-200">{detailOrder.provider_job_attempts ?? '—'}</span></div>
+                  <div><span className="text-zinc-500">UID: </span><span className="font-mono text-zinc-300">{detailOrder.provider_uid || '—'}</span></div>
+                  <div><span className="text-zinc-500">Category: </span><span className="font-mono text-zinc-300">{detailOrder.provider_category_snapshot || '—'}</span></div>
+                  <div className="col-span-2"><span className="text-zinc-500">Request ID: </span><span className="font-mono text-zinc-300 break-all">{detailOrder.provider_request_id || '—'}</span></div>
+                  <div><span className="text-zinc-500">Mã nguồn: </span><span className="font-mono text-zinc-300">{detailOrder.provider_order_code || '—'}</span></div>
+                  <div><span className="text-zinc-500">Chi phí: </span><span className="font-semibold text-zinc-200">{detailOrder.provider_price_deducted != null ? `${new Intl.NumberFormat('vi-VN').format(detailOrder.provider_price_deducted)} ${detailOrder.provider_currency || ''}` : '—'}</span></div>
+                  <div className="col-span-2"><span className="text-zinc-500">Số dư nguồn (snapshot): </span><span className="font-semibold text-zinc-200">{detailOrder.provider_balance_snapshot != null ? new Intl.NumberFormat('vi-VN').format(detailOrder.provider_balance_snapshot) : '—'}</span></div>
+                </div>
+                {detailOrder.provider_last_error_msg && (
+                  <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-2.5 text-rose-300">
+                    <span className="font-semibold">{detailOrder.provider_last_error_code || 'error'}: </span>{detailOrder.provider_last_error_msg}
+                  </div>
+                )}
+                <p className="text-[11px] text-zinc-500">Số dư nguồn chỉ là ảnh chụp tại thời điểm phản hồi, không phải số dư trực tiếp.</p>
+
+                {providerActionError && <p className="text-rose-400">{providerActionError}</p>}
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={isProviderActing}
+                    onClick={handleProviderRetry}
+                    className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 font-bold text-amber-300 disabled:opacity-50"
+                  >
+                    Thử lại (cùng request_id)
+                  </button>
+                </div>
+
+                <div className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                  <span className="font-semibold text-zinc-300">Kết luận đối soát</span>
+                  <div className="flex flex-wrap gap-2">
+                    <select
+                      value={reconcileOutcome}
+                      onChange={(e) => setReconcileOutcome(e.target.value as 'completed' | 'failed')}
+                      className="rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200"
+                    >
+                      <option value="completed">Thành công</option>
+                      <option value="failed">Thất bại</option>
+                    </select>
+                    <input
+                      value={reconcileNote}
+                      onChange={(e) => setReconcileNote(e.target.value)}
+                      placeholder="Ghi chú đối soát (tối thiểu 5 ký tự)"
+                      className="min-w-[180px] flex-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200"
+                    />
+                    <button
+                      type="button"
+                      disabled={isProviderActing}
+                      onClick={handleProviderReconcile}
+                      className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 font-semibold text-zinc-200 disabled:opacity-50"
+                    >
+                      Ghi nhận
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Payment Snapshot */}
             <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4 space-y-2 text-xs">

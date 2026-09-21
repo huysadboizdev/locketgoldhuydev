@@ -21,6 +21,7 @@ os.environ["REVIEW_STORAGE_PROVIDER"] = "local"
 os.environ["FLASK_SECRET_KEY"] = "test-secret-key-review-1234567890"
 os.environ["JWT_SECRET"] = "test-jwt-secret-review-key-12345678"
 os.environ["REFRESH_TOKEN_PEPPER"] = "test-pepper-review-secure-12345"
+os.environ["ADMIN_EMAIL"] = "admin@locket.test"
 os.environ["ADMIN_USERNAME"] = "admin"
 os.environ["ADMIN_PASSWORD"] = "admin-secret-password-1234"
 

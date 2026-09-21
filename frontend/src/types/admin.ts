@@ -171,6 +171,25 @@ export interface AdminActivationOrder {
   download_accessed_at?: number;
   created_at: number;
   updated_at: number;
+  // Provider (LunaKey) snapshot + job state (admin-only view).
+  activation_provider_snapshot?: 'legacy_locket' | 'lunakey';
+  provider_category_snapshot?: string | null;
+  warranty_months_snapshot?: number | null;
+  warranty_policy_snapshot?: string | null;
+  provider_uid?: string | null;
+  provider_username?: string | null;
+  provider_request_id?: string | null;
+  provider_order_code?: string | null;
+  provider_price_deducted?: number | null;
+  provider_currency?: string | null;
+  provider_balance_snapshot?: number | null;
+  provider_balance_at?: number | null;
+  provider_last_error_code?: string | null;
+  provider_last_error_msg?: string | null;
+  provider_completed_at?: number | null;
+  provider_job_status?: string;
+  provider_job_attempts?: number;
+  provider_job_error?: string | null;
 }
 
 export interface AdminOrdersListResponse {
@@ -211,8 +230,61 @@ export interface AdminPlanItem {
   inventory_status: 'in_stock' | 'out_of_stock';
   ios_fulfillment_mode: 'auto_activation' | 'manual_contact' | 'disabled';
   android_fulfillment_mode: 'apk_download' | 'manual_contact' | 'disabled';
+  activation_provider?: 'legacy_locket' | 'lunakey';
+  provider_category?: string | null;
+  warranty_months?: number | null;
+  warranty_policy?: string | null;
+  allow_existing_gold?: boolean | number;
+  existing_gold_supported?: boolean;
+  readiness_issues?: string[];
+  sellable?: boolean;
   created_at?: number;
   updated_at?: number;
+}
+
+export interface AdminProviderStatus {
+  provider: string;
+  configured: boolean;
+  enabled: boolean;
+  paused: boolean;
+  paused_reason?: string | null;
+  base_host?: string | null;
+  jobs: Record<string, number>;
+}
+
+export interface AdminProviderJob {
+  id: number;
+  order_id: number;
+  provider: string;
+  provider_request_id: string;
+  payload_hash: string;
+  status: string;
+  attempt_count: number;
+  max_attempts: number;
+  next_attempt_at?: number | null;
+  lease_owner?: string | null;
+  lease_expires_at?: number | null;
+  last_error_code?: string | null;
+  last_error_msg?: string | null;
+  provider_order_code?: string | null;
+  created_at: number;
+  updated_at: number;
+  completed_at?: number | null;
+  order_status?: string;
+  locket_username?: string | null;
+  plan_name_snapshot?: string | null;
+  platform?: string | null;
+  price_vnd_snapshot?: number | null;
+  price_coin_snapshot?: number | null;
+  payment_method?: string | null;
+}
+
+export interface AdminProviderJobsResponse {
+  success: boolean;
+  items: AdminProviderJob[];
+  pagination: AdminPagination;
+  total: number;
+  provider_status: AdminProviderStatus;
 }
 
 export interface AdminPlansResponse {
