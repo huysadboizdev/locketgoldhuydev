@@ -64,11 +64,17 @@ async function executeRefreshNetworkCall(): Promise<string | null> {
     headers['X-CSRF-Token'] = currentCsrfToken;
   }
 
+  // Hard timeout: unlike apiClient(), this raw fetch must never be able to
+  // hang the app's auth bootstrap (which would leave the whole UI spinning).
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+
   try {
     const response = await fetch('/api/auth/refresh', {
       method: 'POST',
       headers,
       credentials: 'include',
+      signal: controller.signal,
     });
 
     let data: any = null;
@@ -106,8 +112,11 @@ async function executeRefreshNetworkCall(): Promise<string | null> {
       return null;
     }
   } catch {
-    // Network errors (offline, dropouts): DO NOT clear state as revoked
+    // Network errors (offline, dropouts, timeout abort): DO NOT clear state as
+    // revoked — just treat the session as absent for this load.
     return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 

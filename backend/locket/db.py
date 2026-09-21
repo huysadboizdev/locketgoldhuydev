@@ -3088,7 +3088,12 @@ def purchase_plan_with_coin_atomic(user_id, plan_id, platform, fulfillment_mode,
             return ("error", "provider_mismatch")
         provider = plan_provider
         if provider == "lunakey":
-            if not plan.get("provider_category"):
+            # The caller passes the provider category already resolved against
+            # the confirmed contract (only confirmed values are non-empty). An
+            # empty value means an unconfirmed/unsupported plan, so refuse
+            # BEFORE any wallet debit. Transaction-layer guard; the route's
+            # plan_readiness check is the primary gate.
+            if not (provider_category and str(provider_category).strip()):
                 conn.execute("ROLLBACK")
                 return ("error", "plan_provider_not_configured")
             if plan.get("warranty_months") and not plan.get("warranty_policy"):

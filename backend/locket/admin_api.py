@@ -627,6 +627,12 @@ def plans_create():
     android_fulfillment_mode = data.get("android_fulfillment_mode")
     activation_provider = (data.get("activation_provider") or "legacy_locket").strip().lower()
     provider_category = data.get("provider_category")
+    if activation_provider == "lunakey":
+        # LunaKey only provides Locket Gold 1 year. Force both the provider
+        # category and the Gold duration so an admin can never misconfigure them
+        # (e.g. "month" is the shop's warranty duration, not a provider category).
+        provider_category = "yearly"
+        raw_duration = 365
     warranty_months = data.get("warranty_months")
     warranty_policy = data.get("warranty_policy")
     allow_existing_gold, bool_error = _json_bool(data, "allow_existing_gold", default=False)
@@ -695,6 +701,13 @@ def plans_update(plan_id: int):
         _, bool_error = _json_bool(data, field)
         if bool_error:
             return bool_error
+    # LunaKey only supports category "yearly"; force it on update too.
+    target_provider = (
+        data.get("activation_provider") or old_plan.get("activation_provider") or "legacy_locket"
+    )
+    if str(target_provider).strip().lower() == "lunakey":
+        data["provider_category"] = "yearly"
+        data["duration_days"] = 365
     try:
         ok = db.update_plan(plan_id, **data)
         if not ok:

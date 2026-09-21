@@ -17,6 +17,10 @@ vi.mock('../api/adminEndpoints', () => ({
   updateAdminPlan: vi.fn(),
   toggleAdminPlan: vi.fn(),
   deleteAdminPlan: vi.fn(),
+  fetchAdminProviderStatus: vi.fn().mockResolvedValue({
+    success: true,
+    provider: { allowed_categories: ['yearly'] },
+  }),
 }));
 
 const mockedFetchAdminPlans = vi.mocked(fetchAdminPlans);

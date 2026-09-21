@@ -1,7 +1,9 @@
 Flask>=2.0.0
 requests>=2.28.0
 python-dotenv>=0.19.0
-gunicorn>=21.2.0
+# Pinned: 25.1+ adds a control socket whose default path is read-only under
+# systemd ProtectSystem=strict. gunicorn.conf.py sets control_socket explicitly.
+gunicorn==26.2.0
 PyJWT>=2.10,<3
 Pillow>=10.0.0
 cloudinary>=1.41.0

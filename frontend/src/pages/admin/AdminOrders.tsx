@@ -26,6 +26,8 @@ import {
   refundManualAdminOrder,
   retryAdminProviderJob,
   reconcileAdminProviderJob,
+  fetchAdminProviderStatus,
+  resumeAdminProvider,
 } from '../../api/adminEndpoints';
 import { AdminActivationOrder } from '../../types/admin';
 import { ModalPortal } from '../../components/common/ModalPortal';
@@ -47,6 +49,39 @@ export const AdminOrders: React.FC = () => {
 
   // Detail Modal
   const [detailOrder, setDetailOrder] = useState<AdminActivationOrder | null>(null);
+
+  // LunaKey provider pause state (banner + resume action)
+  const [providerPaused, setProviderPaused] = useState(false);
+  const [providerPausedReason, setProviderPausedReason] = useState<string | null>(null);
+  const [isResumingProvider, setIsResumingProvider] = useState(false);
+
+  const loadProviderStatus = useCallback(async () => {
+    try {
+      const res = await fetchAdminProviderStatus();
+      if (res?.success) {
+        setProviderPaused(Boolean(res.provider?.paused));
+        setProviderPausedReason(res.provider?.paused_reason || null);
+      }
+    } catch {
+      // Provider status is advisory; ignore transient errors.
+    }
+  }, []);
+
+  useEffect(() => {
+    loadProviderStatus();
+  }, [loadProviderStatus]);
+
+  const handleResumeProvider = async () => {
+    setIsResumingProvider(true);
+    try {
+      await resumeAdminProvider();
+      await loadProviderStatus();
+    } catch {
+      // Keep the banner; the admin can retry.
+    } finally {
+      setIsResumingProvider(false);
+    }
+  };
 
   // Action Modals State
   const [actionType, setActionType] = useState<'start' | 'complete' | 'cancel' | 'refund' | null>(null);
@@ -275,6 +310,32 @@ export const AdminOrders: React.FC = () => {
             className="rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-zinc-950 hover:bg-amber-400 transition-colors shrink-0 shadow-sm"
           >
             Lọc đơn cần xử lý ngay
+          </button>
+        </div>
+      )}
+
+      {/* LunaKey provider paused banner */}
+      {providerPaused && (
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-2xl border border-rose-500/40 bg-rose-500/10 p-4 backdrop-blur-md">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-rose-500/20 text-rose-400 shrink-0">
+              <AlertCircle className="h-5 w-5" />
+            </div>
+            <div>
+              <h4 className="text-sm font-bold text-rose-300">Nguồn LunaKey đang tạm dừng</h4>
+              <p className="text-xs text-rose-400/80">
+                Khách mới không thể tra cứu/mua gói LunaKey.
+                {providerPausedReason ? ` Lý do: ${providerPausedReason}.` : ''}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={isResumingProvider}
+            onClick={handleResumeProvider}
+            className="rounded-xl bg-rose-500 px-4 py-2 text-xs font-bold text-zinc-950 hover:bg-rose-400 transition-colors shrink-0 shadow-sm disabled:opacity-50"
+          >
+            {isResumingProvider ? 'Đang mở lại...' : 'Mở lại LunaKey'}
           </button>
         </div>
       )}

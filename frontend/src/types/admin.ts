@@ -249,6 +249,10 @@ export interface AdminProviderStatus {
   paused: boolean;
   paused_reason?: string | null;
   base_host?: string | null;
+  /** Provider categories confirmed by the contract (non-secret). */
+  allowed_categories?: string[];
+  /** Whether the background provider worker is enabled. */
+  worker_enabled?: boolean;
   jobs: Record<string, number>;
 }
 

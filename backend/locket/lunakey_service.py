@@ -72,8 +72,13 @@ def plan_readiness(plan, client=None):
     issues = []
     if plan_provider(plan) != PROVIDER_LUNAKEY:
         return issues
-    if not plan.get("provider_category"):
+    raw_category = plan.get("provider_category")
+    if not raw_category or not str(raw_category).strip():
         issues.append("provider_category_missing")
+    elif lunakey.resolve_provider_category(raw_category) is None:
+        # Non-empty but not a confirmed provider category (e.g. "month"): the
+        # plan must not be sold until the contract is confirmed.
+        issues.append("provider_category_unsupported")
     if plan.get("warranty_months") and not plan.get("warranty_policy"):
         issues.append("warranty_policy_missing")
     if not lunakey.is_configured():
@@ -149,6 +154,9 @@ def get_provider_status():
         "paused": state.get("paused", False),
         "paused_reason": state.get("reason"),
         "base_host": host,
+        "allowed_categories": list(lunakey.KNOWN_CATEGORIES),
+        "worker_enabled": (os.getenv("LUNAKEY_WORKER_ENABLED", "1") or "").strip().lower()
+        in {"1", "true", "yes", "on"},
         "jobs": counts,
     }
 
@@ -233,7 +241,10 @@ def consume_confirmation(user_id, plan_id, token):
 
 def _provider_payload(order):
     user = (order.get("provider_username") or order.get("locket_username") or "").strip()
-    category = (order.get("provider_category_snapshot") or "").strip()
+    # Store the plan's internal category, but send only the confirmed provider
+    # category upstream. An unconfirmed value yields no category -> the job is
+    # not created (fail-safe) instead of guessing.
+    category = lunakey.resolve_provider_category(order.get("provider_category_snapshot")) or ""
     return user, category
 
 
