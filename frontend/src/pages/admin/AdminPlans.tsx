@@ -61,7 +61,6 @@ export const AdminPlans: React.FC = () => {
   const [iosFulfillmentMode, setIosFulfillmentMode] = useState<'auto_activation' | 'manual_contact' | 'disabled'>('auto_activation');
   const [androidFulfillmentMode, setAndroidFulfillmentMode] = useState<'apk_download' | 'manual_contact' | 'disabled'>('apk_download');
   const [activationProvider, setActivationProvider] = useState<'legacy_locket' | 'lunakey'>('legacy_locket');
-  const [providerCategory, setProviderCategory] = useState('');
   const [warrantyMonths, setWarrantyMonths] = useState<number>(0);
   const [warrantyPolicy, setWarrantyPolicy] = useState('');
   const [allowExistingGold, setAllowExistingGold] = useState(false);
@@ -113,7 +112,6 @@ export const AdminPlans: React.FC = () => {
     setIosFulfillmentMode('auto_activation');
     setAndroidFulfillmentMode('apk_download');
     setActivationProvider('legacy_locket');
-    setProviderCategory('');
     setWarrantyMonths(0);
     setWarrantyPolicy('');
     setAllowExistingGold(false);
@@ -137,7 +135,6 @@ export const AdminPlans: React.FC = () => {
     setIosFulfillmentMode(plan.ios_fulfillment_mode || (plan.supported_platforms === 'android' ? 'disabled' : 'auto_activation'));
     setAndroidFulfillmentMode(plan.android_fulfillment_mode || (plan.supported_platforms === 'ios' ? 'disabled' : 'apk_download'));
     setActivationProvider(plan.activation_provider || 'legacy_locket');
-    setProviderCategory(plan.provider_category || '');
     setWarrantyMonths(plan.warranty_months || 0);
     setWarrantyPolicy(plan.warranty_policy || '');
     setAllowExistingGold(Boolean(plan.allow_existing_gold));
@@ -181,7 +178,8 @@ export const AdminPlans: React.FC = () => {
       ios_fulfillment_mode: iosFulfillmentMode,
       android_fulfillment_mode: androidFulfillmentMode,
       activation_provider: activationProvider,
-      provider_category: activationProvider === 'lunakey' ? (providerCategory.trim() || null) : null,
+      // LunaKey only provides Locket Gold 1 year -> category is always "yearly".
+      provider_category: activationProvider === 'lunakey' ? 'yearly' : null,
       warranty_months: activationProvider === 'lunakey' ? (Number(warrantyMonths) || 0) : null,
       warranty_policy: activationProvider === 'lunakey' ? (warrantyPolicy.trim() || null) : null,
       allow_existing_gold: activationProvider === 'lunakey' ? allowExistingGold : false,
@@ -452,10 +450,13 @@ export const AdminPlans: React.FC = () => {
                   id="admin-plan-duration"
                   type="number"
                   min="1"
-                  value={durationDays}
+                  value={activationProvider === 'lunakey' ? 365 : durationDays}
                   onChange={(e) => setDurationDays(parseInt(e.target.value, 10) || 1)}
+                  readOnly={activationProvider === 'lunakey'}
                   required
-                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
+                  className={`w-full rounded-xl border border-zinc-800 px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500 ${
+                    activationProvider === 'lunakey' ? 'cursor-not-allowed bg-zinc-900 text-zinc-400' : 'bg-zinc-950'
+                  }`}
                 />
               </div>
 
@@ -566,7 +567,12 @@ export const AdminPlans: React.FC = () => {
                 <select
                   id="admin-plan-provider"
                   value={activationProvider}
-                  onChange={(e) => setActivationProvider(e.target.value as 'legacy_locket' | 'lunakey')}
+                  onChange={(e) => {
+                    const next = e.target.value as 'legacy_locket' | 'lunakey';
+                    setActivationProvider(next);
+                    // LunaKey = Gold 1 year: fix the Gold duration too.
+                    if (next === 'lunakey') setDurationDays(365);
+                  }}
                   className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
                 >
                   <option value="legacy_locket">Locket cũ (hàng đợi tài khoản)</option>
@@ -578,15 +584,18 @@ export const AdminPlans: React.FC = () => {
                 <>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label htmlFor="admin-plan-provider-category" className="block text-zinc-300 font-semibold mb-1">Category LunaKey *</label>
+                      <label htmlFor="admin-plan-provider-category" className="block text-zinc-300 font-semibold mb-1">Gói LunaKey (cố định)</label>
                       <input
                         id="admin-plan-provider-category"
                         type="text"
-                        value={providerCategory}
-                        onChange={(e) => setProviderCategory(e.target.value)}
-                        placeholder="Ví dụ: yearly"
-                        className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
+                        value="yearly"
+                        readOnly
+                        className="w-full cursor-not-allowed rounded-xl border border-zinc-800 bg-zinc-900 px-3.5 py-2.5 text-zinc-400 focus:outline-none"
                       />
+                      <p className="mt-1 text-[11px] text-zinc-500">
+                        LunaKey chỉ cấp <strong>Locket Gold 1 năm</strong> (category <code>yearly</code>).
+                        Không nhập category khác. Bảo hành là chính sách riêng của shop (ô bên cạnh).
+                      </p>
                     </div>
                     <div>
                       <label htmlFor="admin-plan-warranty-months" className="block text-zinc-300 font-semibold mb-1">Bảo hành (tháng)</label>

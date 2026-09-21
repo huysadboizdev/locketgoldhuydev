@@ -173,6 +173,8 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
   const [avatarError, setAvatarError] = useState(false);
   const [providerStatus, setProviderStatus] = useState<string | null>(null);
   const [providerStatusLabel, setProviderStatusLabel] = useState<string | null>(null);
+  // True when the reconciliation poll loop hit its max duration and stopped.
+  const [providerPollStopped, setProviderPollStopped] = useState(false);
 
   const isLunakeyPlan = selectedPlan?.activation_provider === 'lunakey';
 
@@ -742,6 +744,11 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
     if (currentStep !== 'completed' || !isLunakeyPlan || !activationOrderId) return;
     let cancelled = false;
     let timerId: any = null;
+    let attempt = 0;
+    const startedAt = Date.now();
+    // Reconciliation may take a while; poll with backoff and stop after a cap
+    // instead of hammering the API forever. Never fake a terminal state.
+    const MAX_POLL_MS = 10 * 60 * 1000;
 
     const pollProvider = async () => {
       let terminal = false;
@@ -768,10 +775,17 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
         // Keep polling on transient errors.
       }
       if (!cancelled && !terminal) {
-        timerId = setTimeout(pollProvider, 3000);
+        if (Date.now() - startedAt >= MAX_POLL_MS) {
+          setProviderPollStopped(true);
+          return;
+        }
+        attempt += 1;
+        const delay = Math.min(3000 + attempt * 500, 15000);
+        timerId = setTimeout(pollProvider, delay);
       }
     };
 
+    setProviderPollStopped(false);
     timerId = setTimeout(pollProvider, 2000);
     return () => {
       cancelled = true;
@@ -1772,6 +1786,13 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
                   ? 'Đơn đã bị hủy. Vui lòng liên hệ hỗ trợ nếu bạn muốn tạo đơn mới.'
                   : 'Đơn đã được thanh toán và đang gửi tới nguồn kích hoạt. Quá trình này có thể mất ít phút; bạn có thể đóng trang và xem lại trong mục Đơn kích hoạt.'}
               </p>
+
+              {providerPollStopped && providerStatus === 'awaiting_reconciliation' && (
+                <div className="rounded-2xl border border-amber-300/50 bg-amber-50/70 dark:bg-amber-950/30 p-3.5 text-[11px] text-amber-700 dark:text-amber-300">
+                  Hệ thống đang chờ đối soát kết quả từ nhà cung cấp. Bạn không cần thanh toán lại —
+                  vui lòng tải lại trang hoặc kiểm tra lại trong mục <strong>Đơn kích hoạt</strong> sau.
+                </div>
+              )}
 
               {lunakeyProfile?.gold_expiry && queueStatus === 'completed' && (
                 <div className="rounded-2xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/60 dark:bg-emerald-950/20 p-3.5 text-xs text-emerald-800 dark:text-emerald-300">

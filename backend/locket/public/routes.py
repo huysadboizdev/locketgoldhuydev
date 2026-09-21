@@ -181,18 +181,24 @@ def _resolve_lunakey_purchase(plan, body, user_id):
     issues = lunakey_service.plan_readiness(plan)
     if issues:
         if "api_key_missing" in issues:
-            code = "provider_not_configured"
+            code, status = "provider_not_configured", 503
         elif "provider_paused" in issues:
-            code = "provider_paused"
+            code, status = "provider_paused", 503
         elif "provider_disabled" in issues:
-            code = "provider_disabled"
+            code, status = "provider_disabled", 503
+        elif "provider_category_unsupported" in issues:
+            # Plan is misconfigured (e.g. an unconfirmed category). Fail before
+            # any payment; the customer must pick a correctly configured plan.
+            code, status = "provider_category_unsupported", 409
+        elif "provider_category_missing" in issues:
+            code, status = "provider_category_missing", 409
         else:
-            code = "plan_not_configured"
+            code, status = "plan_not_configured", 503
         return None, (jsonify({
             "success": False,
             "error": code,
             "msg": lunakey_client.public_message(code),
-        }), 503)
+        }), status)
 
     token = str(body.get("lookup_token") or "").strip()
     confirmation = lunakey_service.consume_confirmation(user_id, plan["id"], token)
@@ -225,7 +231,10 @@ def _resolve_lunakey_purchase(plan, body, user_id):
 
     return {
         "provider": "lunakey",
-        "category": plan.get("provider_category"),
+        # Only the confirmed provider category is ever sent/stored for a LunaKey
+        # order; an unconfirmed plan value resolves to None and is rejected by
+        # plan_readiness above before we get here.
+        "category": lunakey_client.resolve_provider_category(plan.get("provider_category")),
         "warranty_months": plan.get("warranty_months"),
         "warranty_policy": plan.get("warranty_policy"),
         "uid": uid,

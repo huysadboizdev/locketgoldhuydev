@@ -18,6 +18,19 @@ Environment=MOBILECONFIG_PATH=/var/lib/locket-gold/downloads/locket.mobileconfig
 Environment=ANDROID_APK_PATH=/var/lib/locket-gold/downloads/Locket_v1.200.0-gocmod.com.apk
 Environment=ENABLE_ACCEL_REDIRECT=1
 
+# Writable runtime dir for gunicorn control socket + heartbeats
+# (control_socket/worker_tmp_dir in gunicorn.conf.py). Created and owned by the
+# service user; removed on stop. Keeps the source tree read-only
+# (ProtectSystem=strict) without weakening hardening.
+RuntimeDirectory=locket-gold
+RuntimeDirectoryMode=0750
+
+# Persistent storage lives under /var/lib (not the read-only source tree).
+# Without these, config.py falls back to backend/storage/reviews and logs
+# "could not create storage root at storage/reviews: Read-only file system".
+Environment=REVIEW_STORAGE_ROOT=/var/lib/locket-gold/storage/reviews
+Environment=CREATOR_STORAGE_ROOT=/var/lib/locket-gold/creators
+
 ExecStart=/opt/locket-gold/backend/.venv/bin/gunicorn \
     --config /opt/locket-gold/backend/gunicorn.conf.py \
     wsgi:app

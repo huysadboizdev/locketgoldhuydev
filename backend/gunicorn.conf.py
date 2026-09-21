@@ -22,6 +22,17 @@ workers = 1
 threads = 4
 worker_class = "gthread"
 
+# Gunicorn 25.1+ starts a control socket (for `gunicornc`). Its default path is
+# $XDG_RUNTIME_DIR/gunicorn.ctl, else $HOME/.gunicorn/gunicorn.ctl — under systemd
+# that resolves to /opt/locket-gold/.gunicorn, which is read-only
+# (ProtectSystem=strict). Keep it in the writable runtime dir instead.
+# (This is separate from worker_tmp_dir below.)
+control_socket = "/run/locket-gold/gunicorn.ctl"
+
+# Per-worker heartbeat temp files. Point them at the same writable runtime dir
+# so nothing under the read-only source tree is touched.
+worker_tmp_dir = "/run/locket-gold"
+
 # Restore work runs out-of-band, so HTTP timeouts only need to cover
 # /api/get-user-info (synchronous) and admin pages.
 timeout = 60

@@ -43,16 +43,6 @@ Thumbs.db
 /docs/opencode-lunakey-*.md
 /docs/lunakey-*.md
 
-# ---- Local dev helpers / test harness (not needed to run the app) ----
+# ---- Local dev helpers (not needed to run the app) ----
 /scripts/dev_local.ps1
 /scripts/run_local_preview.py
-/backend/run_tests_isolated.py
-
-# ---- LunaKey regression tests kept local only ----
-# Remove this block if you want the tests tracked on GitHub.
-/backend/tests/test_lunakey_*.py
-/backend/tests/fixtures/
-/frontend/src/tests/ActivationWizardLunaKey.test.tsx
-/frontend/src/tests/AdminOrdersLunaKey.test.tsx
-/frontend/src/tests/OrdersViewLunaKey.test.tsx
-/frontend/src/tests/LunaKeyLookup.test.ts

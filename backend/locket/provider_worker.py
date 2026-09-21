@@ -30,6 +30,15 @@ from .providers import lunakey
 
 logger = logging.getLogger(__name__)
 
+# Configuration error codes that indicate the provider integration itself is
+# misconfigured (not just one order). These pause new sends. Order-specific
+# configuration codes (e.g. unknown_category) fail only that order.
+_PROVIDER_WIDE_CONFIG_CODES = frozenset({
+    "provider_not_configured",
+    "invalid_base_url",
+    "base_url_not_allowed",
+})
+
 
 def _env_flag(name, default="1"):
     return (os.getenv(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -186,9 +195,22 @@ class ProviderWorker:
             return
 
         if category == "configuration":
-            lunakey_service.pause_provider("configuration")
-            self._mark_reconciliation(job, owner, code, message, order_id, last_outcome="rejected")
-            self._notify(order_id, "awaiting_reconciliation", message)
+            # A configuration error is raised BEFORE any network send (missing
+            # key, bad base URL, or an unconfirmed plan category). Nothing was
+            # executed upstream, so this is a deterministic failure — it must NOT
+            # be parked in awaiting_reconciliation (that is only for outcomes
+            # that may have been executed but are unknown).
+            if code in _PROVIDER_WIDE_CONFIG_CODES:
+                # Provider-wide misconfiguration: stop taking/sending new work.
+                lunakey_service.pause_provider("configuration")
+            db.finalize_provider_job_tx(
+                job["id"], owner,
+                {"status": "failed", "last_error_code": code, "last_error_msg": message,
+                 "last_outcome": "rejected", "lease_owner": None, "lease_expires_at": None},
+                order_status="failed",
+                order_updates={"provider_last_error_code": code, "provider_last_error_msg": message},
+            )
+            self._notify(order_id, "failed", message)
             return
 
         if category == "insufficient_funds":

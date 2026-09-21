@@ -40,10 +40,32 @@ DEFAULT_TIMEOUT_SECONDS = 20
 MAX_TIMEOUT_SECONDS = 120
 MAX_BODY_CHARS = 4000
 
-# Provider categories we are allowed to send. Only ``yearly`` is documented by
-# the provider; anything else must be added here together with a confirmed
-# contract. We never invent monthly/quarterly categories.
+# Provider categories confirmed by the LunaKey contract. Only ``yearly`` has a
+# documented example (docs/opencode-lunakey-implementation-prompt.md). We never
+# invent monthly/quarterly categories; add one here only with a confirmed
+# contract.
 KNOWN_CATEGORIES = ("yearly",)
+
+# Internal plan category value -> confirmed provider category. Keeps the shop's
+# plan labels decoupled from the provider API contract. A value absent from this
+# map is NOT activatable (fail-safe, never guess month->yearly).
+CATEGORY_ALIASES = {
+    "yearly": "yearly",
+}
+
+
+def resolve_provider_category(value):
+    """Map an internal plan category to a confirmed provider category.
+
+    Returns the provider category string, or ``None`` when the value is empty or
+    not confirmed by the contract.
+    """
+    if value is None:
+        return None
+    key = str(value).strip().lower()
+    if not key:
+        return None
+    return CATEGORY_ALIASES.get(key)
 
 
 class LunaKeyError(Exception):
@@ -110,6 +132,8 @@ PUBLIC_MESSAGES = {
     "provider_not_configured": "Nguồn kích hoạt LunaKey chưa được cấu hình. Vui lòng liên hệ hỗ trợ.",
     "provider_disabled": "Nguồn kích hoạt LunaKey đang tạm dừng. Vui lòng thử lại sau.",
     "provider_paused": "Nguồn kích hoạt LunaKey đang tạm dừng để kiểm tra. Vui lòng thử lại sau.",
+    "provider_category_missing": "Gói dịch vụ chưa được cấu hình nhà cung cấp. Vui lòng chọn gói khác.",
+    "provider_category_unsupported": "Gói dịch vụ chưa được cấu hình nhà cung cấp. Vui lòng chọn gói khác.",
     "lookup_not_found": "Không tìm thấy tài khoản Locket với thông tin đã nhập.",
     "lookup_failed": "Không thể tra cứu tài khoản Locket lúc này. Vui lòng thử lại sau.",
     "invalid_request": "Yêu cầu kích hoạt không hợp lệ hoặc tài khoản không đủ điều kiện.",
@@ -356,7 +380,10 @@ class LunaKeyClient:
             raise LunaKeyInvalidRequestError("invalid_user", public_message("invalid_request"), http_status=400)
         if not isinstance(category, str) or not category.strip():
             raise LunaKeyInvalidRequestError("invalid_category", public_message("invalid_request"), http_status=400)
-        if category.strip() not in KNOWN_CATEGORIES:
+        provider_category = resolve_provider_category(category)
+        if provider_category is None:
+            # Raised BEFORE any network send: an unconfirmed category is a
+            # deterministic configuration failure, never an unclear outcome.
             raise LunaKeyConfigError(
                 "unknown_category", "Category LunaKey chưa được xác nhận trong hợp đồng."
             )
@@ -365,7 +392,7 @@ class LunaKeyClient:
 
         payload = {
             "user": user.strip(),
-            "category": category.strip(),
+            "category": provider_category,
             "confirm": bool(confirm),
             "request_id": request_id.strip(),
         }
