@@ -98,6 +98,24 @@ Trạng thái acknowledgment chỉ sống trong phiên wizard hoặc `sessionSto
 - Platform/provider trả lỗi: giữ nguyên quy tắc refund/reconciliation hiện có.
 - Category ngoài allowlist: plan không được bán và không có request trả phí gửi upstream.
 
+## Chuyển từ QR sang thanh toán Coin
+
+Trang thanh toán không hủy QR chỉ vì người dùng bấm sang tab Coin. QR chỉ được supersede sau khi giao dịch Coin đã trừ ví và tạo activation order thành công.
+
+Sau một lần mua bằng Coin thành công, backend tìm QR `pending` chưa ghi nhận tiền của cùng người dùng và cùng ý định mua (plan, platform, tài khoản Locket, coupon và request fingerprint). Các QR khớp được chuyển sang `cancelled` với lý do máy đọc được `superseded_by_coin` và liên kết tới activation order Coin. Thao tác nằm trong cùng transaction hoặc một bước idempotent bắt buộc ngay sau transaction mua Coin; retry không được hủy nhầm QR khác.
+
+Danh sách thanh toán Admin mặc định không trả các QR `cancelled` có lý do `superseded_by_coin`, nên QR mà khách chỉ bấm thử sẽ biến mất khỏi màn hình vận hành. Bản ghi vẫn được giữ trong database/audit để đối soát và xử lý webhook đến muộn; không hard-delete chứng từ thanh toán. Admin có bộ lọc “Đã thay thế bởi Coin” khi cần kiểm toán.
+
+Các trường hợp không được ẩn/hủy:
+
+- QR đã `paid`;
+- QR `underpaid` hoặc `review_needed`;
+- QR có `bank_transaction_id` hoặc đã nhận webhook ngân hàng;
+- mua Coin thất bại, thiếu số dư hoặc bị idempotency conflict;
+- QR của plan/tài khoản/coupon khác.
+
+Nếu webhook ngân hàng đến sau khi QR đã bị supersede, hệ thống không tạo activation thứ hai. Giao dịch được đưa vào trạng thái cần đối soát/hoàn tiền và vẫn xuất hiện cho Admin.
+
 ## Kiểm thử
 
 ### Backend
@@ -108,6 +126,10 @@ Trạng thái acknowledgment chỉ sống trong phiên wizard hoặc `sessionSto
 - Test endpoint setup-ticket: auth, plan active, iOS, DNS required và file availability.
 - Test Coin/QR bị chặn trước khi tạo giao dịch nếu thiếu acknowledgment; hợp lệ khi có acknowledgment.
 - Test post-payment ticket theo ownership, platform và trạng thái; vé vẫn một lần và hết hạn đúng hạn.
+- Test chuyển tab sang Coin chưa hủy QR; Coin thất bại vẫn giữ QR pending.
+- Test Coin thành công chỉ supersede đúng QR pending cùng fingerprint; paid/underpaid/review/QR khác không đổi.
+- Test retry Coin idempotent không hủy thêm QR và webhook đến muộn không tạo activation thứ hai.
+- Test Admin mặc định ẩn `superseded_by_coin`, nhưng bộ lọc kiểm toán vẫn xem được bản ghi.
 
 ### Frontend
 
@@ -117,6 +139,7 @@ Trạng thái acknowledgment chỉ sống trong phiên wizard hoặc `sessionSto
 - Sau thanh toán/pending/completed, LunaKey order có DNS guide; không còn chữ “Không cần DNS”.
 - Nội dung an toàn iCloud và hướng dẫn Safari xuất hiện ở prerequisite, completion và OrdersView.
 - Các trạng thái failed/refunded/cancelled không bị spinner vô hạn và không bị mô tả thành kích hoạt thành công.
+- Chuyển QR → Coin không gọi hủy ngay; sau Coin thành công QR thử nghiệm biến mất khi Admin refresh.
 
 ## Phạm vi không làm
 
