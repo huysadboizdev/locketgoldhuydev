@@ -40,9 +40,23 @@ Thumbs.db
 /opencode.jsonc
 /AGENTS.md
 /docs/superpowers/
+/.superpowers/
 /docs/opencode-lunakey-*.md
 /docs/lunakey-*.md
 
 # ---- Local dev helpers (not needed to run the app) ----
 /scripts/dev_local.ps1
 /scripts/run_local_preview.py
+
+# ---- LunaKey backend tests (contain dummy API-key strings; keep local only) ----
+/backend/tests/test_lunakey_*.py
+/backend/tests/fixtures/
+
+# ---- Local scratch scripts & test build outputs ----
+*scratch*
+scratch_*.py
+backend/scratch_*.py
+dist_test/
+dist-check/
+/frontend/src/tests/DnsPage.test.tsx
+

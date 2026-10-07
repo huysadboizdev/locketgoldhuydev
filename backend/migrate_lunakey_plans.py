@@ -44,12 +44,24 @@ def main() -> int:
         print("No LunaKey plans found. Nothing to do.")
         return 0
 
+    from locket.providers import lunakey  # noqa: E402
+
     changed = 0
     for row in rows:
         category = (row["provider_category"] or "").strip().lower()
+        if category == "month":
+            category = "1month"
+        resolved = lunakey.resolve_provider_category(category) or "yearly"
+        expected_days = lunakey.expected_duration_days(resolved) or 365
+        expected_warranty = lunakey.expected_warranty_months(resolved) or 2
         duration = int(row["duration_days"] or 0)
-        needs_fix = category != "yearly" or duration != 365
-        target = "yearly/365" if needs_fix else "already ok"
+
+        needs_fix = (
+            row["provider_category"] != resolved
+            or duration != expected_days
+            or (row["warranty_months"] if "warranty_months" in row.keys() else None) != expected_warranty
+        )
+        target = f"{resolved}/{expected_days}d/bh{expected_warranty}m" if needs_fix else "already ok"
         print(
             f"plan #{row['id']} {row['slug']!r}: "
             f"category={row['provider_category']!r} duration_days={duration} "
@@ -57,9 +69,10 @@ def main() -> int:
         )
         if needs_fix and args.apply:
             conn.execute(
-                "UPDATE plans SET provider_category = 'yearly', duration_days = 365, "
+                "UPDATE plans SET provider_category = ?, duration_days = ?, "
+                "warranty_months = ?, warranty_policy = COALESCE(warranty_policy, 'shop_calendar_months'), "
                 "updated_at = ? WHERE id = ?",
-                (time.time(), row["id"]),
+                (resolved, expected_days, expected_warranty, time.time(), row["id"]),
             )
             changed += 1
 

@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { ExternalLink, Headphones, MessageCircle, Send, Shield, Smartphone, Users } from 'lucide-react';
 
 const supportChannels = [
@@ -104,6 +105,10 @@ export const Footer: React.FC = () => {
         <div className="mt-8 flex flex-col items-center justify-between gap-3 border-t border-zinc-200 pt-6 text-center text-xs text-zinc-500 dark:border-zinc-800/80 dark:text-zinc-400 sm:flex-row sm:text-left">
           <p>© {new Date().getFullYear()} Locket Gold - Huy Dev. Mọi quyền được bảo lưu.</p>
           <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 text-zinc-500 dark:text-zinc-400 sm:justify-end">
+            <Link to="/dns" className="font-semibold text-amber-600 dark:text-amber-400 hover:underline">
+              Cài đặt DNS iPhone
+            </Link>
+            <span>•</span>
             <span>Bảo mật</span>
             <span>•</span>
             <span>Điều khoản</span>

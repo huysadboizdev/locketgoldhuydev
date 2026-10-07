@@ -83,10 +83,29 @@ describe('OrdersView LunaKey tracking', () => {
 
     const dialog = await openFirstDetail();
     expect(dialog).toHaveTextContent('Kích hoạt qua LunaKey');
-    expect(dialog).toHaveTextContent('Không cần DNS');
+    expect(dialog).toHaveTextContent('Yêu cầu DNS Profile');
     expect(dialog).not.toHaveTextContent('Hostname DNS riêng tư');
     // awaiting_reconciliation is still in progress, so a spinner is expected.
     expect(dialog.querySelector('.animate-spin')).not.toBeNull();
+  });
+
+  it('renders DNS download link and instructions for a completed LunaKey order', async () => {
+    mockOrders([
+      makeOrder({
+        id: 12,
+        provider: 'lunakey',
+        status: 'completed',
+        provider_status: 'completed',
+        provider_status_label: 'Hoàn thành',
+      }),
+    ]);
+    renderOrders();
+
+    const dialog = await openFirstDetail();
+    expect(dialog).toHaveTextContent('Yêu cầu DNS Profile');
+    const downloadBtn = dialog.querySelector('a[href="https://dns.lunakey.net/dns.mobileconfig"]');
+    expect(downloadBtn).not.toBeNull();
+    expect(dialog).toHaveTextContent('Xem hướng dẫn 3 bước');
   });
 
   it('renders refunded and cancelled LunaKey orders as terminal (no spinner)', async () => {

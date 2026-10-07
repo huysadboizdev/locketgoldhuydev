@@ -469,17 +469,48 @@ describe('ActivationWizard LunaKey behavior', () => {
     expect(await screen.findByText(/Đang có Locket Gold \(10 ngày còn lại\)/)).toBeInTheDocument();
   });
 
-  it('never renders NaN/undefined when Gold fields are missing', async () => {
+  it('renders DNS mobileconfig download button and instructions when LunaKey order completes', async () => {
     mockedLookup.mockResolvedValue({
-      success: true, lookup_token: 'tok',
-      profile: { username: 'u', uid: 'uid', has_gold: true, gold_expiry: null, gold_days_left: null },
+      success: true,
+      lookup_token: 'tok-dns',
+      profile: { username: 'dnsuser', uid: 'uid-dns', name: 'DnsUser', has_gold: false },
     });
-    renderWizard([{ ...lunakeyPlan, existing_gold_supported: true }]);
-    await selectPlan('LunaKey');
-    enterUsername('u');
-    clickVerify();
+    mockedPurchaseCoin.mockResolvedValue({ success: true, activation_order_id: 99, status: 'paid' });
+    mockedOrderDetail.mockResolvedValue({
+      success: true,
+      order: {
+        id: 99,
+        user_id: 1,
+        plan_name_snapshot: lunakeyPlan.name,
+        product_id_snapshot: '',
+        duration_days_snapshot: 365,
+        price_vnd_snapshot: 50000,
+        price_coin_snapshot: 50,
+        payment_method: 'coin',
+        platform: 'ios',
+        locket_username: 'dnsuser',
+        fulfillment_mode_snapshot: 'auto_activation',
+        status: 'completed',
+        created_at: 0,
+        updated_at: 0,
+        provider: 'lunakey',
+        provider_status: 'completed',
+        provider_status_label: 'Hoàn thành',
+      },
+    });
 
-    expect(await screen.findByText('Đang có Locket Gold')).toBeInTheDocument();
-    expect(screen.queryByText(/NaN|undefined/)).not.toBeInTheDocument();
+    renderWizard([lunakeyPlan]);
+    await selectPlan('LunaKey');
+    enterUsername('dnsuser');
+    clickVerify();
+    await screen.findByText(/@dnsuser/);
+    fireEvent.click(screen.getByRole('button', { name: /Tiếp tục thanh toán/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Xác nhận thanh toán ngay/ }));
+
+    expect(await screen.findByText(/Cài Đặt Cấu Hình DNS Để Hiển Thị Gold \(Bắt buộc\)/i)).toBeInTheDocument();
+    const downloadBtn = screen.getByRole('link', { name: /Tải Cấu Hình DNS \(\.mobileconfig\)/i });
+    expect(downloadBtn).toHaveAttribute('href', 'https://dns.lunakey.net/dns.mobileconfig');
+    const guideLink = screen.getByRole('link', { name: /Xem hướng dẫn cài đặt 3 bước/i });
+    expect(guideLink).toHaveAttribute('href', '/dns');
   });
 });

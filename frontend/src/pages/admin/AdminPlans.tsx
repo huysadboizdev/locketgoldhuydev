@@ -61,8 +61,18 @@ export const AdminPlans: React.FC = () => {
   const [iosFulfillmentMode, setIosFulfillmentMode] = useState<'auto_activation' | 'manual_contact' | 'disabled'>('auto_activation');
   const [androidFulfillmentMode, setAndroidFulfillmentMode] = useState<'apk_download' | 'manual_contact' | 'disabled'>('apk_download');
   const [activationProvider, setActivationProvider] = useState<'legacy_locket' | 'lunakey'>('legacy_locket');
+  const [providerCategory, setProviderCategory] = useState<'1month' | '3month' | '6month' | 'yearly'>('1month');
   const [warrantyMonths, setWarrantyMonths] = useState<number>(0);
   const [warrantyPolicy, setWarrantyPolicy] = useState('');
+
+  const handleLunaKeyCategoryChange = (cat: '1month' | '3month' | '6month' | 'yearly') => {
+    setProviderCategory(cat);
+    const durations: Record<string, number> = { '1month': 30, '3month': 90, '6month': 180, 'yearly': 365 };
+    const warranties: Record<string, number> = { '1month': 1, '3month': 1, '6month': 2, 'yearly': 2 };
+    setDurationDays(durations[cat] || 30);
+    setWarrantyMonths(warranties[cat] || 1);
+    if (!warrantyPolicy) setWarrantyPolicy('shop_calendar_months');
+  };
   const [allowExistingGold, setAllowExistingGold] = useState(false);
   const [featuresText, setFeaturesText] = useState('');
   const [isPopular, setIsPopular] = useState(false);
@@ -112,6 +122,7 @@ export const AdminPlans: React.FC = () => {
     setIosFulfillmentMode('auto_activation');
     setAndroidFulfillmentMode('apk_download');
     setActivationProvider('legacy_locket');
+    setProviderCategory('1month');
     setWarrantyMonths(0);
     setWarrantyPolicy('');
     setAllowExistingGold(false);
@@ -135,6 +146,7 @@ export const AdminPlans: React.FC = () => {
     setIosFulfillmentMode(plan.ios_fulfillment_mode || (plan.supported_platforms === 'android' ? 'disabled' : 'auto_activation'));
     setAndroidFulfillmentMode(plan.android_fulfillment_mode || (plan.supported_platforms === 'ios' ? 'disabled' : 'apk_download'));
     setActivationProvider(plan.activation_provider || 'legacy_locket');
+    setProviderCategory((plan.provider_category as '1month' | '3month' | '6month' | 'yearly') || '1month');
     setWarrantyMonths(plan.warranty_months || 0);
     setWarrantyPolicy(plan.warranty_policy || '');
     setAllowExistingGold(Boolean(plan.allow_existing_gold));
@@ -178,10 +190,9 @@ export const AdminPlans: React.FC = () => {
       ios_fulfillment_mode: iosFulfillmentMode,
       android_fulfillment_mode: androidFulfillmentMode,
       activation_provider: activationProvider,
-      // LunaKey only provides Locket Gold 1 year -> category is always "yearly".
-      provider_category: activationProvider === 'lunakey' ? 'yearly' : null,
+      provider_category: activationProvider === 'lunakey' ? providerCategory : null,
       warranty_months: activationProvider === 'lunakey' ? (Number(warrantyMonths) || 0) : null,
-      warranty_policy: activationProvider === 'lunakey' ? (warrantyPolicy.trim() || null) : null,
+      warranty_policy: activationProvider === 'lunakey' ? (warrantyPolicy.trim() || 'shop_calendar_months') : null,
       allow_existing_gold: activationProvider === 'lunakey' ? allowExistingGold : false,
       features,
       is_popular: isPopular,
@@ -450,7 +461,7 @@ export const AdminPlans: React.FC = () => {
                   id="admin-plan-duration"
                   type="number"
                   min="1"
-                  value={activationProvider === 'lunakey' ? 365 : durationDays}
+                  value={durationDays}
                   onChange={(e) => setDurationDays(parseInt(e.target.value, 10) || 1)}
                   readOnly={activationProvider === 'lunakey'}
                   required
@@ -570,8 +581,9 @@ export const AdminPlans: React.FC = () => {
                   onChange={(e) => {
                     const next = e.target.value as 'legacy_locket' | 'lunakey';
                     setActivationProvider(next);
-                    // LunaKey = Gold 1 year: fix the Gold duration too.
-                    if (next === 'lunakey') setDurationDays(365);
+                    if (next === 'lunakey') {
+                      handleLunaKeyCategoryChange(providerCategory);
+                    }
                   }}
                   className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
                 >
@@ -584,17 +596,20 @@ export const AdminPlans: React.FC = () => {
                 <>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label htmlFor="admin-plan-provider-category" className="block text-zinc-300 font-semibold mb-1">Gói LunaKey (cố định)</label>
-                      <input
+                      <label htmlFor="admin-plan-provider-category" className="block text-zinc-300 font-semibold mb-1">Gói LunaKey (API bên thứ 3)</label>
+                      <select
                         id="admin-plan-provider-category"
-                        type="text"
-                        value="yearly"
-                        readOnly
-                        className="w-full cursor-not-allowed rounded-xl border border-zinc-800 bg-zinc-900 px-3.5 py-2.5 text-zinc-400 focus:outline-none"
-                      />
+                        value={providerCategory}
+                        onChange={(e) => handleLunaKeyCategoryChange(e.target.value as any)}
+                        className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
+                      >
+                        <option value="1month">1 Tháng (30 ngày, BH 1T - Giá sỉ: 5.000đ)</option>
+                        <option value="3month">3 Tháng (90 ngày, BH 1T - Giá sỉ: 8.000đ)</option>
+                        <option value="6month">6 Tháng (180 ngày, BH 2T - Giá sỉ: 9.000đ)</option>
+                        <option value="yearly">1 Năm (365 ngày, BH 2T - Giá sỉ: 10.000đ)</option>
+                      </select>
                       <p className="mt-1 text-[11px] text-zinc-500">
-                        LunaKey chỉ cấp <strong>Locket Gold 1 năm</strong> (category <code>yearly</code>).
-                        Không nhập category khác. Bảo hành là chính sách riêng của shop (ô bên cạnh).
+                        Hệ thống tự động map mã gói sang API LunaKey. Giá bán lẻ cho khách bạn tự điều chỉnh ở ô Giá VND ở trên.
                       </p>
                     </div>
                     <div>

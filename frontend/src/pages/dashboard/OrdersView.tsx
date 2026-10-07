@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { ModalPortal } from '../../components/common/ModalPortal';
 import { useLiveRefresh } from '../../hooks/useLiveRefresh';
+import { LUNAKEY_DNS_MOBILECONFIG_URL } from '../../components/dns/DnsInstructionsCard';
 
 const ORDER_STATUS_LABELS: Record<string, string> = {
   awaiting_payment: 'Chờ thanh toán',
@@ -453,12 +454,12 @@ export const OrdersView: React.FC = () => {
 
             {/* Fulfillment Specific Guides */}
             {selectedOrder.provider === 'lunakey' ? (
-              /* LUNAKEY VIEW — no DNS / mobileconfig */
+              /* LUNAKEY VIEW — requires DNS mobileconfig */
               <div className="rounded-2xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/40 dark:bg-amber-950/20 p-4 space-y-3">
                 <div className="flex items-center justify-between border-b border-amber-200/50 dark:border-amber-900/40 pb-2">
                   <div className="flex items-center gap-2 text-amber-700 dark:text-amber-300 font-bold text-xs">
                     {selectedOrder.status === 'completed' ? (
-                      <CheckCircle2 className="h-4 w-4" />
+                      <CheckCircle2 className="h-4 w-4 text-emerald-500" />
                     ) : ['failed', 'refunded', 'cancelled'].includes(selectedOrder.status) ? (
                       <Clock className="h-4 w-4" />
                     ) : (
@@ -466,11 +467,13 @@ export const OrdersView: React.FC = () => {
                     )}
                     <span>Kích hoạt qua LunaKey</span>
                   </div>
-                  <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400">Không cần DNS</span>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/20">
+                    Yêu cầu DNS Profile
+                  </span>
                 </div>
                 <p className="text-xs text-zinc-600 dark:text-zinc-300">
                   {selectedOrder.status === 'completed'
-                    ? 'Tài khoản Locket của bạn đã được kích hoạt Gold. Không cần cài đặt DNS hay tải profile — hãy mở lại ứng dụng Locket để kiểm tra.'
+                    ? 'Tài khoản Locket của bạn đã được kích hoạt Gold trên hệ thống. Để hiển thị huy hiệu Gold trên iPhone, bạn BẮT BUỘC phải cài đặt cấu hình DNS và bật tin cậy chứng chỉ LocketGold CA.'
                     : selectedOrder.status === 'failed'
                     ? 'Đơn đã thanh toán nhưng chưa kích hoạt được. Đội ngũ hỗ trợ sẽ kiểm tra và xử lý; bạn không cần thanh toán lại.'
                     : selectedOrder.status === 'refunded'
@@ -479,6 +482,35 @@ export const OrdersView: React.FC = () => {
                     ? 'Đơn đã bị hủy. Vui lòng liên hệ hỗ trợ nếu bạn muốn tạo đơn mới.'
                     : 'Đơn đã thanh toán và đang được xử lý qua nguồn kích hoạt. Trạng thái sẽ tự động cập nhật.'}
                 </p>
+
+                {selectedOrder.status === 'completed' && (
+                  <div className="rounded-xl border border-amber-300/50 bg-white/80 dark:bg-zinc-900/80 p-3 space-y-2">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-zinc-900 dark:text-white">
+                      <Apple className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+                      <span>Cài đặt cấu hình DNS để nhận Gold trên iPhone</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <a
+                        href={LUNAKEY_DNS_MOBILECONFIG_URL}
+                        download="dns.mobileconfig"
+                        className="gold-primary inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold shadow-sm"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        <span>Tải Cấu Hình DNS</span>
+                      </a>
+                      <a
+                        href="/dns"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="gold-secondary inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        <span>Xem hướng dẫn 3 bước</span>
+                      </a>
+                    </div>
+                  </div>
+                )}
+
                 {selectedOrder.warranty_months_snapshot ? (
                   <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
                     Bảo hành hiển thị theo chính sách của shop: <strong>{selectedOrder.warranty_months_snapshot} tháng</strong>. Hạn Gold do nhà cung cấp quyết định và hiển thị riêng khi có thông tin.

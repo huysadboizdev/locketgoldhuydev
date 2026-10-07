@@ -22,6 +22,7 @@ import { useReviews } from '../hooks/useReviews';
 import { useToast } from '../hooks/useToast';
 import { useOverlay } from '../context/OverlayContext';
 import { useLiveRefresh } from '../hooks/useLiveRefresh';
+import { DnsInstructionsCard } from '../components/dns/DnsInstructionsCard';
 import {
   LayoutDashboard,
   Zap,
@@ -31,11 +32,12 @@ import {
   User,
   Plus,
   MessageSquareHeart,
+  Apple,
 } from 'lucide-react';
 
-export type DashboardTab = 'overview' | 'wizard' | 'wallet' | 'orders' | 'feedback' | 'account';
+export type DashboardTab = 'overview' | 'wizard' | 'wallet' | 'orders' | 'dns' | 'feedback' | 'account';
 
-const DASHBOARD_TABS: DashboardTab[] = ['overview', 'wizard', 'wallet', 'orders', 'feedback', 'account'];
+const DASHBOARD_TABS: DashboardTab[] = ['overview', 'wizard', 'wallet', 'orders', 'dns', 'feedback', 'account'];
 
 export const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
@@ -379,6 +381,24 @@ export const DashboardPage: React.FC = () => {
 
           <button
             type="button"
+            onClick={() => handleTabChange('dns')}
+            className={`flex items-center justify-between rounded-2xl px-3.5 py-2.5 text-xs font-semibold transition-all ${
+              activeTab === 'dns'
+                ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/30'
+                : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-900 hover:text-zinc-900 dark:hover:text-white'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <Apple className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+              <span>Cài đặt DNS</span>
+            </div>
+            <span className="text-[10px] px-1.5 py-0.2 rounded bg-rose-500/15 text-rose-600 dark:text-rose-400 font-bold">
+              iOS
+            </span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => handleTabChange('feedback')}
             className={`flex items-center gap-2.5 rounded-2xl px-3.5 py-2.5 text-xs font-semibold transition-all ${
               activeTab === 'feedback'
@@ -448,6 +468,12 @@ export const DashboardPage: React.FC = () => {
 
           {activeTab === 'orders' && (
             <OrdersView />
+          )}
+
+          {activeTab === 'dns' && (
+            <div className="space-y-4">
+              <DnsInstructionsCard />
+            </div>
           )}
 
           {activeTab === 'feedback' && (

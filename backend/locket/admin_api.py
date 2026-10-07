@@ -626,15 +626,17 @@ def plans_create():
     ios_fulfillment_mode = data.get("ios_fulfillment_mode")
     android_fulfillment_mode = data.get("android_fulfillment_mode")
     activation_provider = (data.get("activation_provider") or "legacy_locket").strip().lower()
-    provider_category = data.get("provider_category")
-    if activation_provider == "lunakey":
-        # LunaKey only provides Locket Gold 1 year. Force both the provider
-        # category and the Gold duration so an admin can never misconfigure them
-        # (e.g. "month" is the shop's warranty duration, not a provider category).
-        provider_category = "yearly"
-        raw_duration = 365
     warranty_months = data.get("warranty_months")
     warranty_policy = data.get("warranty_policy")
+    provider_category = data.get("provider_category")
+    if activation_provider == "lunakey":
+        from .providers import lunakey
+        resolved = lunakey.resolve_provider_category(provider_category) or "yearly"
+        provider_category = resolved
+        raw_duration = lunakey.expected_duration_days(resolved) or 365
+        warranty_months = lunakey.expected_warranty_months(resolved) or (warranty_months or 2)
+        if not warranty_policy:
+            warranty_policy = "shop_calendar_months"
     allow_existing_gold, bool_error = _json_bool(data, "allow_existing_gold", default=False)
     if bool_error:
         return bool_error
@@ -701,13 +703,18 @@ def plans_update(plan_id: int):
         _, bool_error = _json_bool(data, field)
         if bool_error:
             return bool_error
-    # LunaKey only supports category "yearly"; force it on update too.
     target_provider = (
         data.get("activation_provider") or old_plan.get("activation_provider") or "legacy_locket"
     )
     if str(target_provider).strip().lower() == "lunakey":
-        data["provider_category"] = "yearly"
-        data["duration_days"] = 365
+        from .providers import lunakey
+        cat = data.get("provider_category") or old_plan.get("provider_category")
+        resolved = lunakey.resolve_provider_category(cat) or "yearly"
+        data["provider_category"] = resolved
+        data["duration_days"] = lunakey.expected_duration_days(resolved) or 365
+        data["warranty_months"] = lunakey.expected_warranty_months(resolved)
+        if not data.get("warranty_policy") and not old_plan.get("warranty_policy"):
+            data["warranty_policy"] = "shop_calendar_months"
     try:
         ok = db.update_plan(plan_id, **data)
         if not ok:

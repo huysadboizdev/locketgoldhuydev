@@ -35,23 +35,42 @@ logger = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "https://locket.lunakey.net"
 DEFAULT_ALLOWED_HOSTS = ("locket.lunakey.net",)
 LOOKUP_PATH = "/api/v1/lookup"
-ACTIVATE_PATH = "/api/v1/gold"
+ACTIVATE_PATH = "/api/v1/unlock"
 DEFAULT_TIMEOUT_SECONDS = 20
 MAX_TIMEOUT_SECONDS = 120
 MAX_BODY_CHARS = 4000
 
-# Provider categories confirmed by the LunaKey contract. Only ``yearly`` has a
-# documented example (docs/opencode-lunakey-implementation-prompt.md). We never
-# invent monthly/quarterly categories; add one here only with a confirmed
-# contract.
-KNOWN_CATEGORIES = ("yearly",)
+# Provider categories confirmed by the LunaKey contract.
+KNOWN_CATEGORIES = ("1month", "3month", "6month", "yearly")
 
 # Internal plan category value -> confirmed provider category. Keeps the shop's
 # plan labels decoupled from the provider API contract. A value absent from this
 # map is NOT activatable (fail-safe, never guess month->yearly).
-CATEGORY_ALIASES = {
-    "yearly": "yearly",
+CATEGORY_ALIASES = {category: category for category in KNOWN_CATEGORIES}
+
+_CATEGORY_DURATIONS = {
+    "1month": 30,
+    "3month": 90,
+    "6month": 180,
+    "yearly": 365,
 }
+
+_CATEGORY_WARRANTIES = {
+    "1month": 1,
+    "3month": 1,
+    "6month": 2,
+    "yearly": 2,
+}
+
+
+def expected_duration_days(category):
+    resolved = resolve_provider_category(category)
+    return _CATEGORY_DURATIONS.get(resolved)
+
+
+def expected_warranty_months(category):
+    resolved = resolve_provider_category(category)
+    return _CATEGORY_WARRANTIES.get(resolved)
 
 
 def resolve_provider_category(value):
@@ -390,9 +409,14 @@ class LunaKeyClient:
         if not isinstance(request_id, str) or not request_id.strip():
             raise LunaKeyConfigError("missing_request_id", "Thiếu request_id cho đơn kích hoạt.")
 
+        days = expected_duration_days(provider_category)
         payload = {
             "user": user.strip(),
+            "username": user.strip(),
             "category": provider_category,
+            "package": provider_category,
+            "days": days,
+            "payment_method": "balance",
             "confirm": bool(confirm),
             "request_id": request_id.strip(),
         }
@@ -411,24 +435,24 @@ class LunaKeyClient:
                 "success_false", public_message("unclear"), http_status=200, retryable=True
             )
 
-        order_code = data.get("order_code")
+        order_code = data.get("orderCode") or data.get("order_code")
         if not isinstance(order_code, str) or not order_code.strip():
             raise LunaKeyUnclearError(
                 "missing_order_code", public_message("unclear"), http_status=200, retryable=True
             )
-        returned_request_id = data.get("request_id")
+        returned_request_id = data.get("request_id") or data.get("requestId")
         if returned_request_id is not None and str(returned_request_id).strip() != request_id.strip():
             # The provider echoed a different request id: do not claim success.
             raise LunaKeyUnclearError(
                 "request_id_mismatch", public_message("unclear"), http_status=200, retryable=True
             )
 
-        price_deducted = data.get("price_deducted")
+        price_deducted = data.get("priceDeducted") if "priceDeducted" in data else data.get("price_deducted")
         if price_deducted is not None and (
             isinstance(price_deducted, bool) or not isinstance(price_deducted, int)
         ):
             price_deducted = None
-        remaining_balance = data.get("remaining_balance")
+        remaining_balance = data.get("balance") if "balance" in data else data.get("remaining_balance")
         if remaining_balance is not None and (
             isinstance(remaining_balance, bool) or not isinstance(remaining_balance, int)
         ):
@@ -507,4 +531,6 @@ __all__ = [
     "is_enabled",
     "get_base_url",
     "KNOWN_CATEGORIES",
+    "expected_duration_days",
+    "expected_warranty_months",
 ]

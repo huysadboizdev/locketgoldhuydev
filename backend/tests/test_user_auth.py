@@ -43,6 +43,8 @@ class UserAuthTestCase(unittest.TestCase):
             pass
 
     def setUp(self):
+        from locket.user_auth import reset_rate_limits
+        reset_rate_limits()
         self.client = self.app.test_client()
 
     def get_csrf(self, client):

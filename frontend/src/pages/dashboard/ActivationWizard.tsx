@@ -26,6 +26,7 @@ import {
   fetchOrderDetail,
 } from '../../api/endpoints';
 import { PlanCatalog } from './PlanCatalog';
+import { DnsInstructionsCard, LUNAKEY_DNS_MOBILECONFIG_URL } from '../../components/dns/DnsInstructionsCard';
 import { PaymentQrPanel, PaymentQrData } from '../../components/payment/PaymentQrPanel';
 import { ModalPortal } from '../../components/common/ModalPortal';
 import { usePaymentPolling } from '../../hooks/usePaymentPolling';
@@ -175,6 +176,7 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
   const [providerStatusLabel, setProviderStatusLabel] = useState<string | null>(null);
   // True when the reconciliation poll loop hit its max duration and stopped.
   const [providerPollStopped, setProviderPollStopped] = useState(false);
+  const [dnsAcknowledged, setDnsAcknowledged] = useState(false);
 
   const isLunakeyPlan = selectedPlan?.activation_provider === 'lunakey';
 
@@ -786,10 +788,10 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
     };
 
     setProviderPollStopped(false);
-    timerId = setTimeout(pollProvider, 2000);
+    void pollProvider();
     return () => {
       cancelled = true;
-      clearTimeout(timerId);
+      if (timerId) clearTimeout(timerId);
     };
   }, [currentStep, isLunakeyPlan, activationOrderId]);
 
@@ -849,6 +851,7 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
     setAvatarError(false);
     setProviderStatus(null);
     setProviderStatusLabel(null);
+    setDnsAcknowledged(false);
   };
 
   // ---- Lookup card model (LunaKey provider profile; legacy fallback) ----
@@ -1775,17 +1778,73 @@ export const ActivationWizard: React.FC<ActivationWizardProps> = ({
                 </h4>
               </div>
 
-              <p className="text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
-                {providerStatus === 'completed'
-                  ? 'Tài khoản Locket của bạn đã được kích hoạt Gold. Bạn không cần cài đặt DNS hay tải profile — hãy mở lại ứng dụng Locket để kiểm tra.'
-                  : providerStatus === 'failed'
-                  ? 'Đơn đã thanh toán nhưng chưa kích hoạt được. Đội ngũ hỗ trợ sẽ kiểm tra và xử lý; bạn không cần thanh toán lại.'
-                  : providerStatus === 'refunded'
-                  ? 'Đơn đã được hoàn Coin. Bạn không cần thanh toán lại; nếu cần hỗ trợ thêm vui lòng liên hệ shop.'
-                  : providerStatus === 'cancelled'
-                  ? 'Đơn đã bị hủy. Vui lòng liên hệ hỗ trợ nếu bạn muốn tạo đơn mới.'
-                  : 'Đơn đã được thanh toán và đang gửi tới nguồn kích hoạt. Quá trình này có thể mất ít phút; bạn có thể đóng trang và xem lại trong mục Đơn kích hoạt.'}
-              </p>
+              <div className="space-y-4">
+                <p className="text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
+                  {providerStatus === 'completed'
+                    ? 'Tài khoản Locket của bạn đã được ghi nhận kích hoạt thành công trên hệ thống. Để hiển thị huy hiệu Gold và các tính năng trên iPhone, bạn BẮT BUỘC phải cài đặt cấu hình DNS và bật tin cậy chứng chỉ LocketGold CA.'
+                    : providerStatus === 'failed'
+                    ? 'Đơn đã thanh toán nhưng chưa kích hoạt được. Đội ngũ hỗ trợ sẽ kiểm tra và xử lý; bạn không cần thanh toán lại.'
+                    : providerStatus === 'refunded'
+                    ? 'Đơn đã được hoàn Coin. Bạn không cần thanh toán lại; nếu cần hỗ trợ thêm vui lòng liên hệ shop.'
+                    : providerStatus === 'cancelled'
+                    ? 'Đơn đã bị hủy. Vui lòng liên hệ hỗ trợ nếu bạn muốn tạo đơn mới.'
+                    : 'Đơn đã được thanh toán và đang gửi tới nguồn kích hoạt. Quá trình này có thể mất ít phút; bạn có thể đóng trang và xem lại trong mục Đơn kích hoạt.'}
+                </p>
+
+                {providerStatus === 'completed' && (
+                  <div className="space-y-4">
+                    {/* Mandatory Banner */}
+                    <div className="rounded-2xl border-2 border-rose-500/50 bg-rose-50/70 dark:bg-rose-950/40 p-4 space-y-2 shadow-sm">
+                      <div className="flex items-center gap-2 text-xs sm:text-sm font-extrabold text-rose-700 dark:text-rose-300">
+                        <Apple className="h-4 w-4 sm:h-5 sm:w-5 text-rose-600 dark:text-rose-400 shrink-0" />
+                        <span>Cài Đặt Cấu Hình DNS Để Hiển Thị Gold (Bắt buộc)</span>
+                      </div>
+                      <p className="text-xs text-rose-900/90 dark:text-rose-200/90 leading-relaxed font-medium">
+                        ⚠️ <strong>LƯU Ý BẮT BUỘC:</strong> Thiết bị iPhone của bạn phải cài đặt cấu hình DNS và bật tin cậy chứng chỉ <strong>LocketGold CA</strong> thì mới hiển thị huy hiệu Gold và mở khóa toàn bộ tính năng VIP!
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                        <a
+                          href={LUNAKEY_DNS_MOBILECONFIG_URL}
+                          download="dns.mobileconfig"
+                          className="gold-primary inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold shadow-md"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          <span>Tải Cấu Hình DNS (.mobileconfig)</span>
+                        </a>
+                        <a
+                          href="/dns"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="gold-secondary inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          <span>Xem hướng dẫn cài đặt 3 bước</span>
+                        </a>
+                      </div>
+                    </div>
+
+                    {/* Embedded Full Instructions Card */}
+                    <DnsInstructionsCard
+                      showAcknowledgeCheckbox={true}
+                      acknowledged={dnsAcknowledged}
+                      onAcknowledge={() => setDnsAcknowledged(!dnsAcknowledged)}
+                    />
+
+                    {/* Quick App Open */}
+                    <div className="pt-2">
+                      <a
+                        href="https://locket.cam/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="gold-primary w-full rounded-2xl py-3.5 text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-all shadow-md active:scale-[0.98]"
+                      >
+                        <span>Mở ứng dụng Locket để trải nghiệm Gold</span>
+                        <ExternalLink className="h-4 w-4" />
+                      </a>
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {providerPollStopped && providerStatus === 'awaiting_reconciliation' && (
                 <div className="rounded-2xl border border-amber-300/50 bg-amber-50/70 dark:bg-amber-950/30 p-3.5 text-[11px] text-amber-700 dark:text-amber-300">

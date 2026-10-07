@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Menu, X, Loader2, LogOut, LayoutDashboard } from 'lucide-react';
+import { Menu, X, Loader2, LogOut, LayoutDashboard, Apple } from 'lucide-react';
 import { fetchGlobalQueueStatus } from '../../api/endpoints';
 import type { GlobalQueueStatusResponse } from '../../types/api';
 import { ThemeToggle } from './ThemeToggle';
@@ -107,6 +107,13 @@ export const Navbar: React.FC<NavbarProps> = ({ isBackendOffline }) => {
           <a href="/#support" onClick={handleScrollSection('support')} className="mx-0.5 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-amber-700 transition-colors hover:border-amber-500/50 hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 dark:text-amber-300">
             Hỗ trợ
           </a>
+          <Link
+            to="/dns"
+            className="mx-0.5 inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/15 px-2.5 py-1.5 text-xs font-bold text-amber-700 hover:bg-amber-500/25 dark:text-amber-300 transition-colors shadow-sm"
+          >
+            <Apple className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+            <span>Cài đặt DNS</span>
+          </Link>
           <Link to={isAuthenticated ? '/dashboard' : '/login?returnTo=/dashboard'} className="rounded-lg px-2.5 py-2 transition-colors hover:text-zinc-900 dark:hover:text-white">
             Gói dịch vụ
           </Link>
@@ -285,6 +292,18 @@ export const Navbar: React.FC<NavbarProps> = ({ isBackendOffline }) => {
               className="flex items-center justify-between py-2 text-sm font-medium text-zinc-800 dark:text-zinc-200 border-b border-zinc-100 dark:border-zinc-800/60"
             >
               <span>Trang chủ</span>
+            </Link>
+
+            <Link
+              to="/dns"
+              onClick={() => setIsMenuOpen(false)}
+              className="flex items-center justify-between py-2.5 px-3 rounded-xl bg-amber-500/15 text-amber-800 dark:text-amber-300 font-bold text-sm border border-amber-500/30 my-1"
+            >
+              <div className="flex items-center gap-2">
+                <Apple className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                <span>Cài đặt cấu hình DNS</span>
+              </div>
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-600 dark:text-rose-400">Bắt buộc</span>
             </Link>
 
             <a
