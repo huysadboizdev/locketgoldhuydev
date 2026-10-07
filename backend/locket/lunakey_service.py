@@ -79,6 +79,12 @@ def plan_readiness(plan, client=None):
         # Non-empty but not a confirmed provider category (e.g. "month"): the
         # plan must not be sold until the contract is confirmed.
         issues.append("provider_category_unsupported")
+    else:
+        resolved = lunakey.resolve_provider_category(raw_category)
+        expected_days = lunakey.expected_duration_days(resolved)
+        plan_days = plan.get("duration_days")
+        if expected_days is not None and plan_days is not None and int(plan_days) != expected_days:
+            issues.append("provider_duration_mismatch")
     if plan.get("warranty_months") and not plan.get("warranty_policy"):
         issues.append("warranty_policy_missing")
     if not lunakey.is_configured():

@@ -24,7 +24,11 @@ describe('support links', () => {
     ['Zalo', 'https://zalo.me/0763076124'],
     ['Telegram', 'https://t.me/huydev204'],
   ])('opens %s at the configured profile in a safe new tab', (name, href) => {
-    render(<Footer />);
+    render(
+      <MemoryRouter>
+        <Footer />
+      </MemoryRouter>
+    );
 
     const link = screen.getByRole('link', { name: new RegExp(name) });
     expect(link).toHaveAttribute('href', href);

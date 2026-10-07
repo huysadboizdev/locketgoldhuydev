@@ -2055,7 +2055,7 @@ def update_plan(plan_id, **kwargs):
         "is_active", "is_popular", "sort_order", "inventory_status",
         "ios_fulfillment_mode", "android_fulfillment_mode",
         "activation_provider", "provider_category", "warranty_months",
-        "warranty_policy", "allow_existing_gold",
+        "warranty_policy", "allow_existing_gold", "requires_dns_profile",
     }
     current = get_plan_by_id(plan_id, public=False)
     if not current:
@@ -2170,6 +2170,8 @@ def _format_plan_row(row, public=True):
     d.setdefault("warranty_policy", None)
     d.setdefault("allow_existing_gold", 0)
     d["existing_gold_supported"] = bool(d.get("allow_existing_gold"))
+    d.setdefault("requires_dns_profile", 1 if d.get("activation_provider") == "lunakey" else 0)
+    d["requires_dns_profile"] = bool(d.get("requires_dns_profile"))
     if public:
         # Never leak internal details in public view
         d.pop("features_json", None)

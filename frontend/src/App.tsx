@@ -24,6 +24,9 @@ const DashboardPage = lazy(() =>
 const AdminPage = lazy(() =>
   import('./pages/admin/AdminPage').then((m) => ({ default: m.AdminPage }))
 );
+const DnsPage = lazy(() =>
+  import('./pages/DnsPage').then((m) => ({ default: m.DnsPage }))
+);
 const NotFoundPage = lazy(() =>
   import('./pages/NotFoundPage').then((m) => ({ default: m.NotFoundPage }))
 );
@@ -125,6 +128,18 @@ export function App() {
               allowAdmin={allowAdmin}
             >
               <TrackOrderPage isBackendOffline={isBackendOffline} />
+            </MaintenanceRouteWrapper>
+          }
+        />
+        <Route
+          path="/dns"
+          element={
+            <MaintenanceRouteWrapper
+              isMaintenance={isMaintenance}
+              message={maintenanceMessage}
+              allowAdmin={allowAdmin}
+            >
+              <DnsPage isBackendOffline={isBackendOffline} />
             </MaintenanceRouteWrapper>
           }
         />
